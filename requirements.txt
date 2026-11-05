@@ -1,0 +1,9 @@
+# Your env (deepdenoiser) is Python 3.8; pin exact versions with `pip freeze` once a run is "blessed".
+numpy
+scipy
+pandas
+matplotlib
+pyyaml
+obspy
+seisbench
+torch

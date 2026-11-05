@@ -1,0 +1,22 @@
+[build-system]
+requires = ["setuptools>=61"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "shishaldin-catalog"
+version = "0.1.0"
+description = "STA/LTA coincidence-trigger event catalog for Shishaldin (filtered vs DeepDenoiser-denoised)"
+requires-python = ">=3.8"
+dependencies = [
+    "numpy",
+    "scipy",
+    "pandas",
+    "matplotlib",
+    "pyyaml",
+    "obspy",
+    "seisbench",
+    "torch",
+]
+
+[tool.setuptools.packages.find]
+where = ["src"]
