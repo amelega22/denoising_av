@@ -1,28 +1,25 @@
-"""All figures. Every function takes data + cfg and RETURNS a matplotlib Figure
-(nothing is shown or saved here), so they work in a notebook and in a script."""
+"""create waveform, spectrogram, event detection, duration, and signal to noise ratio comparison figures"""
 from __future__ import annotations
 
 from typing import Dict, Optional
-
 import matplotlib.dates as mdates
 import matplotlib.pyplot as plt
 import numpy as np
 from scipy.signal import spectrogram
-
 from .config import Config
 from .detection import overlap_flags, sta_lta_components, triggers_to_intervals
 
+# colors
 OVERLAP_COLOR = "green"
 FILTERED_ONLY_COLOR = "orange"
 DENOISED_ONLY_COLOR = "purple"
 BOTH_COLOR = "green"
 ONE_STATION_COLOR = "orange"
 
-
+# define axes
 def _time_axis(ax, fmt="%H:%M"):
     ax.xaxis.set_major_locator(mdates.AutoDateLocator())
     ax.xaxis.set_major_formatter(mdates.DateFormatter(fmt))
-
 
 def _wave_axis(ax, cfg: Config, sci=(-6, -6)):
     ax.set_ylabel("Velocity (m/s)")
@@ -30,81 +27,7 @@ def _wave_axis(ax, cfg: Config, sci=(-6, -6)):
     ax.set_yticks(cfg.plot.waveform_yticks)
     ax.ticklabel_format(axis="y", style="sci", scilimits=sci)
 
-
-# ------------------------------------------------------------ STA/LTA explainer
-def plot_sta_lta_explainer(trace, triggers, cfg: Config, event_idx: Optional[int] = ...):
-    """Walk through how STA/LTA triggers on one detection.
-    event_idx: index into `triggers`; None = biggest ratio; default = cfg.plot value."""
-    p, t = cfg.plot, cfg.trigger
-    if event_idx is ...:
-        event_idx = p.explainer_event_idx
-    if len(triggers) == 0:
-        raise ValueError("No network events in this window to explain.")
-    if event_idx is not None and event_idx >= len(triggers):
-        event_idx = len(triggers) - 1
-
-    fs = trace.stats.sampling_rate
-    sta, lta, ratio = sta_lta_components(trace, t)
-    if event_idx is None:
-        event_idx = int(np.argmax([ratio[on:off].max() for on, off in triggers]))
-    on, off = triggers[event_idx]
-
-    sl = slice(max(int(on - p.explainer_pad_before * fs), 0),
-               min(int(off + p.explainer_pad_after * fs), len(trace.data)))
-    times = trace.times("matplotlib")
-    t_on, t_off = times[on], times[off]
-    sec = 1 / 86400  # one second in matplotlib date units
-
-    fig, axes = plt.subplots(3, 1, figsize=(12, 9), sharex=True,
-                             gridspec_kw={"height_ratios": [1.3, 1, 1]})
-
-    ax = axes[0]
-    ax.plot(times[sl], trace.data[sl], color="black", linewidth=0.6)
-    ax.axvspan(t_on - t.sta_seconds * sec, t_on, color="purple", alpha=0.5,
-               label=f"STA window ({t.sta_seconds:g} s)")
-    ax.axvspan(t_on - t.lta_seconds * sec, t_on, color="orange", alpha=0.15,
-               label=f"LTA window ({t.lta_seconds:g} s)")
-    ax.set_title(f"Filtered waveform, {cfg.data.primary_station}")
-    ax.set_ylabel("Velocity (m/s)")
-    ax.legend(loc="upper right")
-    ax.grid(True, alpha=0.3)
-
-    ax = axes[1]
-    ax.plot(times[sl], sta[sl], color="tab:orange", linewidth=1.5, label="STA (short-term avg of energy)")
-    ax.plot(times[sl], lta[sl], color="tab:blue", linewidth=1.5, label="LTA (long-term avg of energy)")
-    ax.set_title("Running averages of squared velocity")
-    ax.set_ylabel("Energy (m²/s²)")
-    ax.ticklabel_format(axis="y", style="sci", scilimits=(0, 0))
-    ax.legend(loc="upper right")
-    ax.grid(True, alpha=0.3)
-
-    ax = axes[2]
-    ax.plot(times[sl], ratio[sl], color="black", linewidth=1.2, label="STA / LTA")
-    ax.axhline(t.thr_on, color="red", linestyle="--", label=f"Trigger on ({t.thr_on:g})")
-    ax.axhline(t.thr_off, color="blue", linestyle="--", label=f"Trigger off ({t.thr_off:g})")
-    ax.set_title("Ratio crosses on-threshold, then falls back below the off-threshold")
-    ax.set_ylabel("STA / LTA")
-    ax.set_xlabel("UTC Time")
-    ax.legend(loc="upper right")
-    ax.grid(True, alpha=0.3)
-
-    for ax in axes:
-        ax.axvline(t_on, color="red", linewidth=1.5)
-        ax.axvline(t_off, color="blue", linewidth=1.5)
-        ax.axvspan(t_on, t_off, color="green", alpha=0.12)
-        ax.margins(x=0)
-        ax.xaxis.set_major_formatter(mdates.DateFormatter("%H:%M:%S"))
-
-    axes[0].set_title(
-        axes[0].get_title()
-        + f"\n(green = detected network event, {(off - on) / fs:.1f} s; on/off are the network "
-          f"times, so they can sit slightly off this station's own crossing)",
-        fontsize=11)
-    fig.tight_layout()
-    return fig
-
-
-# ------------------------------------------- raw / filtered / denoised + spectrograms
+# plot raw, filtered, and denoised spectrograms
 def _make_spectrogram(tr, cfg: Config):
     p = cfg.plot
     fs = tr.stats.sampling_rate
@@ -121,7 +44,6 @@ def _shared_clim(specs, cfg: Config):
     pooled = np.concatenate([PdB[(f >= lo) & (f <= hi), :].ravel() for f, _, PdB in specs])
     pooled = pooled[np.isfinite(pooled)]
     return np.percentile(pooled, 35), np.percentile(pooled, 97.5)
-
 
 def plot_waveforms_spectrograms(raw, filtered, denoised, cfg: Config,
                                 labels=("Raw Data", "Filtered Data", "Denoised Data")):
@@ -161,7 +83,7 @@ def plot_waveforms_spectrograms(raw, filtered, denoised, cfg: Config,
     return fig
 
 
-# --------------------------------------------- filtered vs denoised with triggers
+# sta/lta filtered vs. denoised plot with triggers
 def _shade_events(ax, intervals, flags, only_label, only_color):
     seen_overlap = seen_only = False
     for (start, end), overlaps in zip(intervals, flags):
@@ -173,14 +95,8 @@ def _shade_events(ax, intervals, flags, only_label, only_color):
         ax.axvspan(start.matplotlib_date, end.matplotlib_date, alpha=0.3, label=label,
                    color=OVERLAP_COLOR if overlaps else only_color)
 
-
 def plot_triggers(filtered, denoised, cft_filtered, cft_denoised,
                   triggers_filtered, triggers_denoised, cfg: Config, mode: str = "overlap"):
-    """Filtered vs denoised waveform + STA/LTA with detections.
-
-    mode="lines"   : red/blue vertical lines at trigger on/off
-    mode="overlap" : shaded spans, green if the other trace also detected it
-    """
     if mode not in ("lines", "overlap"):
         raise ValueError("mode must be 'lines' or 'overlap'")
     t = cfg.trigger
@@ -190,7 +106,6 @@ def plot_triggers(filtered, denoised, cft_filtered, cft_denoised,
     f_flags, d_flags = overlap_flags(f_int, d_int), overlap_flags(d_int, f_int)
 
     fig, axes = plt.subplots(2, 2, figsize=(14, 7), sharex="col")
-
     panels = [
         # (col, name, times, wave, cft, trigger idx, intervals, flags, only-label, only-color, sci)
         (0, "Filtered", t_f, filtered.data, cft_filtered, triggers_filtered, f_int, f_flags,
@@ -235,7 +150,7 @@ def plot_triggers(filtered, denoised, cft_filtered, cft_denoised,
     return fig
 
 
-# ------------------------------ independent station triggers vs network coincidence
+# stations triggers vs. network triggers figure
 def _shade_station_triggers(ax, intervals, flags):
     seen_both = seen_one = False
     for (start, end), coincident in zip(intervals, flags):
@@ -244,7 +159,6 @@ def _shade_station_triggers(ax, intervals, flags):
         else:
             color, label, seen_one = ONE_STATION_COLOR, (None if seen_one else "Not part of coincidence"), True
         ax.axvspan(start.matplotlib_date, end.matplotlib_date, color=color, alpha=0.3, label=label)
-
 
 def plot_station_triggers(filtered_traces: Dict, denoised_traces: Dict,
                           filtered_results: Dict, denoised_results: Dict, cfg: Config):
@@ -293,7 +207,7 @@ def plot_station_triggers(filtered_traces: Dict, denoised_traces: Dict,
     return fig
 
 
-# ------------------------------------------------------------------- durations
+# event duration histograms
 def plot_duration_hist(catalog, bins: int = 30):
     fig, ax = plt.subplots()
     catalog["duration_seconds"].hist(bins=bins, ax=ax)
@@ -301,9 +215,8 @@ def plot_duration_hist(catalog, bins: int = 30):
     ax.set_title("Detected event duration distribution")
     return fig
 
-# -------------------------------------------------- SNR comparison between pipelines
+# compare snr between denoised first and denoised second pipelines
 _COLOR_A, _COLOR_B = "tab:blue", "tab:red"
-
 
 def plot_snr_distributions(catalogs: Dict, labels: Dict, bins: int = 30):
     """Left: overlaid histograms of per-event SNR for the two DENOISED sets.
@@ -350,7 +263,6 @@ def plot_snr_distributions(catalogs: Dict, labels: Dict, bins: int = 30):
     fig.tight_layout()
     return fig
 
-
 def plot_whole_period_snr(whole: Dict, labels: Dict):
     """Grouped bars: whole-period SNR (all detection windows vs everything else)."""
     pipes = list(labels)
@@ -370,7 +282,6 @@ def plot_whole_period_snr(whole: Dict, labels: Dict):
     ax.grid(True, axis="y", alpha=0.3)
     fig.tight_layout()
     return fig
-
 
 def plot_snr_paired(paired, label_a: str, label_b: str, n_a_only: int = 0, n_b_only: int = 0):
     """Events detected (denoised) in BOTH pipelines: SNR in A vs B, and the B - A difference."""
