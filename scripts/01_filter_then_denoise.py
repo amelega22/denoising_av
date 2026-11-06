@@ -5,7 +5,6 @@ output is in outputs/<run_id>/filter_then_denoise/(traces/, figures/, config_use
 config file can be updated and whatever config file was used will be saved so that it is reproducable 
 """
 import logging
-
 import matplotlib.pyplot as plt
 
 # added this to be able to refresh the data being used, when refresh is True it should start fresh
@@ -17,6 +16,8 @@ from shishaldin import store
 from shishaldin.data import get_inventory, get_raw_stream
 from shishaldin.plotting import plot_waveforms_spectrograms
 from shishaldin.processing import denoise_trace, filter_trace, load_denoiser, prepare_station
+from obspy.clients.fdsn.header import FDSNNoDataException
+from shishaldin.processing import NoStationDataError
 
 # established what steps are being taken, pipeline has two options in config (filter then denoise or denoise then filter) 
 PIPELINE = "filter_then_denoise"
