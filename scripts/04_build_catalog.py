@@ -19,11 +19,17 @@ from shishaldin.metrics import whole_period_snr
 
 # build catalog with snr values from one pipeline (PIPELINE from config)
 def build_one(cfg, pipe, figures):
-    p = cfg.data.primary_station
-    print(f"\n{'=' * 70}\nCATALOG: {pipe}\n{'=' * 70}")
-    # load traces and stuff from previous scipt 03
-    filtered = store.load_traces(cfg, pipe, "filtered")[p]
-    denoised = store.load_traces(cfg, pipe, "denoised")[p]
+    filtered_traces = store.load_traces(cfg, pipe, "filtered")
+    denoised_traces = store.load_traces(cfg, pipe, "denoised")
+
+    if set(filtered_traces) != set(denoised_traces):
+        raise RuntimeError("Filtered and denoised traces contain different stations")
+
+    if len(filtered_traces) < cfg.coincidence_sum:
+        raise RuntimeError(f"Need at least {cfg.coincidence_sum} stations, "f"but only have {sorted(filtered_traces)}")
+    p = (cfg.data.primary_station if cfg.data.primary_station in filtered_traces else sorted(filtered_traces)[0])
+    filtered = filtered_traces[p]
+    denoised = denoised_traces[p]
     det = store.load_detections(cfg, pipe)
     trig_f, trig_d = det["triggers_filtered"], det["triggers_denoised"]
 
