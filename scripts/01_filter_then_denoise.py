@@ -15,9 +15,7 @@ from _common import add_refresh, get_cfg
 from shishaldin import store
 from shishaldin.data import get_inventory, get_raw_stream
 from shishaldin.plotting import plot_waveforms_spectrograms
-from shishaldin.processing import denoise_trace, filter_trace, load_denoiser, prepare_station
-from obspy.clients.fdsn.header import FDSNNoDataException
-from shishaldin.processing import NoStationDataError
+from shishaldin.processing import NoStationDataError, denoise_trace, filter_trace, load_denoiser, prepare_station
 
 # established what steps are being taken, pipeline has two options in config (filter then denoise or denoise then filter) 
 PIPELINE = "filter_then_denoise"
@@ -34,12 +32,23 @@ def main():
     raw, filtered, denoised = {}, {}, {}
 
     for stn in cfg.data.stations:
-        padded, raw[stn] = prepare_station(get_raw_stream(cfg, stn, args.refresh), inv, cfg, stn)
-        filtered[stn] = filter_trace(padded, cfg, FILTER_TYPE)
-        log.info("%s", filtered[stn])
+    try:
+        stream = get_raw_stream(cfg, stn, args.refresh)
+        padded, raw_trace = prepare_station(stream, inv, cfg, stn)
+    except (FDSNNoDataException, NoStationDataError) as exc:
+        log.warning("skipping station %s: %s", stn, exc)
+        continue
+
+    raw[stn] = raw_trace
+    filtered[stn] = filter_trace(padded, cfg, FILTER_TYPE)
+
+    log.info("%s", filtered[stn])
+
+if len(filtered) < cfg.coincidence_sum:
+    raise RuntimeError(f"Need at least {cfg.coincidence_sum} stations with usable data, "f"but only found {list(filtered)}")
 
     model = load_denoiser(cfg)
-    for stn in cfg.data.stations:
+    for stn in filtered:
         # DeepDenoiser runs once on the full continuous filtered trace
         denoised[stn] = denoise_trace(model, filtered[stn])
         log.info("denoised %s (check sampling rate): %s", stn, denoised[stn])
@@ -48,10 +57,8 @@ def main():
         store.save_traces(cfg, PIPELINE, kind, traces)
     cfg.save(store.stage_dir(cfg, PIPELINE) / "config_used.yaml")
 
-    p = cfg.data.primary_station
-    fig = plot_waveforms_spectrograms(
-        raw[p], filtered[p], denoised[p], cfg,
-        labels=("Raw Data", f"Filtered Data ({FILTER_TYPE})", "Denoised Data"))
+    p = (cfg.data.primary_station if cfg.data.primary_station in raw else sorted(raw)[0])    
+    fig = plot_waveforms_spectrograms(raw[p], filtered[p], denoised[p], cfg, labels=("Raw Data", f"Filtered Data ({FILTER_TYPE})", "Denoised Data"))
     out = store.figure_dir(cfg, PIPELINE) / "waveforms_spectrograms.png"
     fig.savefig(out, dpi=150)
     plt.close(fig)
