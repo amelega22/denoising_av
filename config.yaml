@@ -4,7 +4,7 @@
 data:
   source: IRIS
   network: AV
-  stations: [SSLS, SSLN] # need to figure out how to skip station if no data is present
+  stations: [SSLS, SSLN, SSBA] # need to figure out how to skip station if no data is present
   primary_station: SSLS        # trace used for plots / SNR / catalog intervals
   location: ""
   channel: "BH*"               # what is requested from the server
