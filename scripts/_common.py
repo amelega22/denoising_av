@@ -1,15 +1,21 @@
-"""Shared argument parsing / setup for the stage scripts."""
+"""helper file for scripts 01-05, shared among scripts so that it does not need to be repeated multiple times throughout the workkflow"""
+# allows arguments to be passed in terminal
 import argparse
+# allows messages with information to appear in terminal (and errors)
 import logging
 import sys
 from pathlib import Path
 
+# root directory is two paths up from common.py
 ROOT = Path(__file__).resolve().parents[1]
+# add src to root path so files in src/shishaldin are easy to find
 sys.path.insert(0, str(ROOT / "src"))  # lets scripts run from a checkout without `pip install -e .`
 
+# noqa: E402 allows for imports not at the beginning of the script and prevents warning  messages reltaed to that
 import matplotlib  # noqa: E402
 
-matplotlib.use("Agg")  # headless: figures are saved, not shown
+# create and save figures without them popping up in window
+matplotlib.use("Agg")  
 
 from shishaldin.config import load_config
 from shishaldin.store import PIPELINES
