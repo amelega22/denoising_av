@@ -52,5 +52,7 @@ def get_raw_stream(cfg: Config, station: str, refresh: bool = False) -> Stream:
         return read(str(path))
     log.info("%s: downloading %s - %s", station, t0, t1)
     st = _client(cfg).get_waveforms(d.network, station, d.location, d.channel, t0, t1)
-    st.write(str(path), format="MSEED")
-    return st
+    if len(st) == 0:
+        return st
+st.write(str(path), format="MSEED")
+return st
