@@ -1,13 +1,12 @@
-"""Stage 1b: load -> remove response -> DeepDenoiser -> HIGHPASS filter.
-Plots raw / filtered / denoised waveforms + spectrograms.
+"""load -> remove response -> DeepDenoiser -> highpass filter
+plots are raw / filtered / denoised waveforms + spectrograms
 
-"filtered" here is raw -> detrend -> highpass only (the no-denoiser reference);
-"denoised" is raw -> detrend -> DeepDenoiser -> highpass. Denoising and filtering
-both run on the PADDED trace; the padding is trimmed off last.
+filtered here is raw -> detrend -> highpass only (reference);
+denoised is raw -> detrend -> DD -> highpass, 
 
-    python scripts/02_denoise_then_filter.py
+run with: python scripts/02_denoise_then_filter.py
 
-Writes outputs/<run_id>/denoise_then_filter/{traces/, figures/, config_used.yaml}
+output: outputs/<run_id>/denoise_then_filter/(traces/, figures/, config_used.yaml)
 """
 import logging
 
@@ -18,14 +17,14 @@ from _common import add_refresh, get_cfg
 from shishaldin import store
 from shishaldin.data import get_inventory, get_raw_stream
 from shishaldin.plotting import plot_waveforms_spectrograms
-from shishaldin.processing import (denoise_trace, detrend_trace, filter_trace,
-                                   load_denoiser, prepare_station)
+from shishaldin.processing import (denoise_trace, detrend_trace, filter_trace,load_denoiser, prepare_station)
 
 PIPELINE = "denoise_then_filter"
-FILTER_TYPE = "highpass"          # uses filter.highpass from config.yaml
+
+# uses filter.highpass from config file
+FILTER_TYPE = "highpass"         
 
 log = logging.getLogger("stage1b")
-
 
 def main():
     cfg, args = get_cfg(__doc__, extra=add_refresh)
@@ -37,10 +36,9 @@ def main():
     for stn in cfg.data.stations:
         padded, raw[stn] = prepare_station(get_raw_stream(cfg, stn, args.refresh), inv, cfg, stn)
 
-        # reference: no denoiser
         filtered[stn] = filter_trace(padded, cfg, FILTER_TYPE)
 
-        # detrend -> denoise (padded) -> highpass -> trim padding
+        # denoise -> highpass -> trim 
         den = denoise_trace(model, detrend_trace(padded))
         log.info("denoised %s (check sampling rate): %s", stn, den)
         denoised[stn] = filter_trace(den, cfg, FILTER_TYPE, detrend=False)
