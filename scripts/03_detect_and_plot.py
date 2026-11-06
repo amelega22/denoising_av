@@ -23,14 +23,16 @@ from shishaldin.detection import analyze_station_triggers, detect
 
 
 def detect_one(cfg, pipe):
-    # select primary station for comparisons
-    p = cfg.data.primary_station
-    # identify which pipeline is being used
-    print(f"\n{'=' * 70}\nDETECTION: {pipe}\n{'=' * 70}")
-
-    # use and load results from script 01
     filtered = store.load_traces(cfg, pipe, "filtered")
     denoised = store.load_traces(cfg, pipe, "denoised")
+
+    if set(filtered) != set(denoised):
+        raise RuntimeError("Filtered and denoised traces contain different stations: "f"{sorted(filtered)} vs {sorted(denoised)}")
+
+    if len(filtered) < cfg.coincidence_sum:
+        raise RuntimeError(f"Need at least {cfg.coincidence_sum} stations, "f"but only have {sorted(filtered)}")
+
+    p = (cfg.data.primary_station if cfg.data.primary_station in filtered else sorted(filtered)[0])
 
     # network coincidence trigger: only events seen at ALL required stations are kept
     cft_f, trig_f = detect(filtered, cfg)
