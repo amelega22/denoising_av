@@ -7,11 +7,14 @@ from .config import Config
 
 log = logging.getLogger(__name__)
 
+class NoStationDataError(ValueError):
+    """Raised when a station has no usable waveform data"""
+
 # remove instrument response and get raw data 
 def prepare_station(raw_stream: Stream, inv: Inventory, cfg: Config, station: str) -> Tuple[Trace, Trace]:
     st = raw_stream.select(channel=cfg.data.component).copy()
     if len(st) == 0:
-        raise ValueError(f"{station}: no {cfg.data.component} data returned")
+        raise NoStationDataError(f"{station}: no {cfg.data.component} data returned")
 
     st.remove_response(inventory=inv, output="VEL")
     # gaps filled with 0
