@@ -37,7 +37,8 @@ def run_sta_lta(trace: Trace, others: Sequence[Trace], tcfg: TriggerConfig, coin
     cft = classic_sta_lta(trace.data, nsta, nlta)
 
     traces = [trace, *others]
-    coinc_sum = min(coinc_sum, len(traces))
+    if len(traces) < coinc_sum: 
+        raise ValueError(f"Need {coinc_sum} stations for coincidence detection, "f"but only have {len(traces)}"
     st_trig = Stream([tr.copy() for tr in traces])
     trig = coincidence_trigger(
         trigger_type="classicstalta", thr_on=tcfg.thr_on, thr_off=tcfg.thr_off,
@@ -65,11 +66,16 @@ def run_sta_lta(trace: Trace, others: Sequence[Trace], tcfg: TriggerConfig, coin
     return cft, np.array(triggers, dtype=int).reshape(-1, 2)
 
 def detect(traces_by_station: Dict[str, Trace], cfg: Config):
-    # Run run_sta_lta with the configured primary station and the rest as partners
-    primary = cfg.data.primary_station
-    others = [traces_by_station[s] for s in cfg.data.stations if s != primary]
-    return run_sta_lta(traces_by_station[primary], others, cfg.trigger, cfg.coincidence_sum)
+    #run network detection using the available stations
+    stations = sorted(traces_by_station)
+    if len(stations) < cfg.coincidence_sum:
+        raise ValueError(f"Need at least {cfg.coincidence_sum} stations, "f"but only have {stations}")
 
+    primary = (cfg.data.primary_station if cfg.data.primary_station in traces_by_station else stations[0])
+
+    others = [traces_by_station[s] for s in stations if s != primary]
+
+    return run_sta_lta(traces_by_station[primary], others, cfg.trigger, cfg.coincidence_sum,)
 
 # compare station by station and network
 def analyze_station_triggers(traces_by_station: Dict[str, Trace], cfg: Config):
@@ -81,7 +87,11 @@ def analyze_station_triggers(traces_by_station: Dict[str, Trace], cfg: Config):
     return station_results, coincidence_intervals
     """
     t = cfg.trigger
-    stations = cfg.data.stations
+    stations = sorted(traces_by_station)
+
+    if len(stations) < cfg.coincidence_sum:
+        raise ValueError(f"Need at least {cfg.coincidence_sum} stations, "f"but only have {stations}")
+
     station_results = {}
     coincidence_stream = Stream()
 
@@ -104,7 +114,8 @@ def analyze_station_triggers(traces_by_station: Dict[str, Trace], cfg: Config):
         sta=t.sta_seconds, lta=t.lta_seconds, details=True,
     )
 
-    t0 = traces_by_station[cfg.data.primary_station].stats.starttime
+    primary = (cfg.data.primary_station if cfg.data.primary_station in traces_by_station else stations[0])
+    t0 = traces_by_station[primary].stats.starttime
     coincidence_intervals = []
     for event in coincidence_events:
         stations_hit = {tid.split(".")[1] for tid in event.get("trace_ids", [])}
@@ -119,20 +130,3 @@ def analyze_station_triggers(traces_by_station: Dict[str, Trace], cfg: Config):
         station_results[stn]["coincident_flags"] = overlap_flags(station_results[stn]["intervals"], coincidence_intervals)
 
     return station_results, coincidence_intervals
-
-
-# # explainer-plot helper
-# def sta_lta_components(trace: Trace, tcfg: TriggerConfig):
-#     """STA and LTA kept separate (trailing boxcar means of squared velocity) plus
-#     their ratio, with the same warm-up / startup muting as run_sta_lta."""
-#     fs = trace.stats.sampling_rate
-#     nsta = int(tcfg.sta_seconds * fs)
-#     nlta = int(tcfg.lta_seconds * fs)
-
-#     sq = trace.data.astype(float) ** 2
-#     sta = np.convolve(sq, np.ones(nsta) / nsta, mode="full")[:len(sq)]
-#     lta = np.convolve(sq, np.ones(nlta) / nlta, mode="full")[:len(sq)]
-#     ratio = np.where(lta > 0, sta / lta, 0.0)
-#     ratio[:nlta] = 0                              # LTA window not yet full
-#     ratio[:int(tcfg.startup_seconds * fs)] = 0    # same startup mute as run_sta_lta
-#     return sta, lta, ratio
