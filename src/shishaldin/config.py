@@ -1,9 +1,4 @@
-"""Run configuration.
-
-One YAML file is the single source of truth for a run. It is loaded into
-typed dataclasses (typos in keys raise an error instead of being ignored),
-and a copy of the *effective* config is written next to every output.
-"""
+""" Reads the config.yaml file and turns/organizes into python data classes so that they can be used """
 from __future__ import annotations
 
 from dataclasses import asdict, dataclass, field, fields
@@ -181,12 +176,8 @@ def _build(cls, values: Optional[Dict[str, Any]], section: str):
         raise ValueError(f"Unknown key(s) in '{section}': {sorted(unknown)}. Allowed: {sorted(allowed)}")
     return cls(**values)
 
-
+# load and manage project settings from a yaml configuration file using typed dataclasses
 def load_config(path, **overrides) -> Config:
-    """Load a YAML config.
-
-    overrides: dotted keys, e.g. load_config("config.yaml", **{"data.start_time": "..."}).
-    """
     path = Path(path).resolve()
     with open(path) as fh:
         raw = yaml.safe_load(fh) or {}
