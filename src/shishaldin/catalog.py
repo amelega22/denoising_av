@@ -1,7 +1,7 @@
-"""Build, summarise and save the long-format event catalog.
+"""build and save the long-format event catalog
 
-One row per DETECTION (filtered or denoised). Events found in both traces share
-an event_number; events found in only one still get their own event_number.
+one row per detection (filtered or denoised), events found in both traces share an event_number
+events found in only one still get their own event_number
 """
 from __future__ import annotations
 
@@ -14,12 +14,11 @@ from obspy import Trace
 from .detection import Interval, intervals_overlap, overlap_flags, triggers_to_intervals
 from .metrics import window_metrics
 
-COLUMNS = ["event_number", "detection_type", "start_time", "end_time",
-           "duration_seconds", "signal_rms", "noise_rms", "snr_db", "max_amplitude"]
+COLUMNS = ["event_number", "detection_type", "start_time", "end_time", "duration_seconds", "signal_rms", "noise_rms", "snr_db", "max_amplitude"]
 
 _TIME_FMT = "%Y-%m-%dT%H:%M:%S.%f"
 
-
+# define rows
 def _row(event_number: int, kind: str, trace: Trace, start, end, noise_seconds: float) -> dict:
     signal_rms, noise_rms, snr_db, max_amp = window_metrics(trace, start, end, noise_seconds)
     return {
@@ -37,11 +36,10 @@ def _row(event_number: int, kind: str, trace: Trace, start, end, noise_seconds: 
 
 def build_catalog(filtered_trace: Trace, denoised_trace: Trace,
                   triggers_filtered, triggers_denoised, noise_seconds: float):
-    """Returns (catalog_df, summary_dict).
+    """Returns (catalog_df, summary_dict)
 
-    Numbering: filtered detections are numbered first, in order. A denoised
-    detection overlapping a filtered one (first unmatched match) gets that SAME
-    event_number. Leftover denoised detections get new event_numbers.
+    filtered detections are numbered first, in order, denoised detection overlapping a filtered one (first unmatched match) gets that same
+    event_number and leftover denoised detections get new event_numbers
     """
     f_int = triggers_to_intervals(filtered_trace, triggers_filtered)
     d_int = triggers_to_intervals(denoised_trace, triggers_denoised)
@@ -83,10 +81,7 @@ def build_catalog(filtered_trace: Trace, denoised_trace: Trace,
     return df, summary
 
 
-def overlap_summary(filtered_trace: Trace, denoised_trace: Trace,
-                    triggers_filtered, triggers_denoised) -> Dict[str, int]:
-    """Counts using 'ANY overlap' (not one-to-one), so these can be larger than
-    the `matched` count in build_catalog when one detection overlaps several."""
+def overlap_summary(filtered_trace: Trace, denoised_trace: Trace, triggers_filtered, triggers_denoised) -> Dict[str, int]:
     f_int = triggers_to_intervals(filtered_trace, triggers_filtered)
     d_int = triggers_to_intervals(denoised_trace, triggers_denoised)
     f_flags = overlap_flags(f_int, d_int)
@@ -124,13 +119,10 @@ def filtered_only_report(filtered_trace: Trace, denoised_trace: Trace,
             "duration_seconds": float(end - start),
             "peak_denoised_sta_lta": float(np.nanmax(window)) if len(window) else np.nan,
         })
-    return pd.DataFrame(rows, columns=["start_time", "end_time", "duration_seconds",
-                                       "peak_denoised_sta_lta"])
+    return pd.DataFrame(rows, columns=["start_time", "end_time", "duration_seconds", "peak_denoised_sta_lta"])
 
-
+# clean up csv format
 def format_float(x) -> str:
-    """Compact CSV format used by the original notebook: 2 decimals, or 2-digit
-    scientific notation when the magnitude is < 1e-3 or >= 1e3."""
     if pd.isna(x):
         return ""
     x = float(x)
@@ -138,8 +130,6 @@ def format_float(x) -> str:
         return "0.00"
     exponent = int(np.floor(np.log10(abs(x))))
     return f"{x:.2e}" if (exponent >= 3 or exponent <= -3) else f"{x:.2f}"
-
-
 def compact_floats(df: pd.DataFrame) -> pd.DataFrame:
     out = df.copy()
     for col in out.select_dtypes(include="number").columns.drop("event_number", errors="ignore"):
