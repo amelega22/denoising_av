@@ -30,8 +30,16 @@ def comparison_dir(cfg: Config) -> Path:
 
 def has_traces(cfg: Config, pipeline: str) -> bool:
     d = cfg.run_dir / pipeline / "traces"
-    return all((d / f"{kind}.{stn}.mseed").exists()
-               for kind in ("filtered", "denoised") for stn in cfg.data.stations)
+
+    available = [
+        stn for stn in cfg.data.stations
+        if all(
+            (d / f"{kind}.{stn}.mseed").exists()
+            for kind in ("filtered", "denoised")
+        )
+    ]
+
+    return len(available) >= cfg.coincidence_sum
 
 def has_detections(cfg: Config, pipeline: str) -> bool:
     return (cfg.run_dir / pipeline / "detections.npz").exists()
@@ -54,16 +62,17 @@ def save_traces(cfg: Config, pipeline: str, kind: str, traces: Dict[str, Trace])
 def load_traces(cfg: Config, pipeline: str, kind: str) -> Dict[str, Trace]:
     d = stage_dir(cfg, pipeline) / "traces"
     out = {}
+
     for stn in cfg.data.stations:
         path = d / f"{kind}.{stn}.mseed"
         if not path.exists():
-            raise FileNotFoundError(
-                f"{path} not found. Run the stage-1 script for the '{pipeline}' pipeline "
-                f"with the same window first.")
+            continue
         st = read(str(path))
         if len(st) != 1:
             raise ValueError(f"{path}: expected 1 trace, found {len(st)}")
         out[stn] = st[0]
+    if not out:
+        raise FileNotFoundError(f"No {kind} traces found for pipeline '{pipeline}'")
     return out
 
 def save_detections(cfg: Config, pipeline: str, **arrays) -> None:
