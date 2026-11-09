@@ -1,15 +1,15 @@
 """compare SNR between the two denoised datasets(filter -> denoise  vs  denoise -> filter)
 
-needs the catalogs from BOTH pipelines
+needs the catalogs from both pipelines
 
-run with: python scripts/05_snr_plots.py
+run with: --python scripts/05_snr_plots.py
 
 output:  outputs/<run_id>/comparison/:
-  snr_summary.csv =  mean / median / std of per-event SNR per pipeline and trace type
-  snr_paired.csv = denoised events detected in BOTH pipelines, with SNR in each
-  figures/snr_distributions.png = SNR histograms (denoised) + boxplots (filtered & denoised)
-  figures/snr_whole_period.png = whole-period SNR bars
-  figures/snr_paired.png = matched-event scatter vs 1:1 and SNR-difference histogram
+- snr_summary.csv =  mean / median / std of per-event SNR per pipeline and trace type
+- snr_paired.csv = denoised events detected in BOTH pipelines, with SNR in each
+- figures/snr_distributions.png = SNR histograms (denoised) + boxplots (filtered & denoised)
+- figures/snr_whole_period.png = whole-period SNR bars
+- figures/snr_paired.png = matched-event scatter vs 1:1 and SNR-difference histogram
 """
 import matplotlib.pyplot as plt
 
