@@ -19,9 +19,30 @@ matplotlib.use("Agg")
 
 from shishaldin.config import load_config
 from shishaldin.store import PIPELINES
+from obspy import UTCDateTime
+
+SECONDS_PER_WEEK = 7 * 24 * 60 * 60
+
+
+def iter_time_windows(start, stop):
+    """
+    Yield consecutive time windows no longer than seven days.
+    The final window may be shorter.
+    """
+    start = UTCDateTime(start)
+    stop = UTCDateTime(stop)
+
+    if stop <= start:
+        raise ValueError("Stop time must be after start time.")
+
+    current = start
+
+    while current < stop:
+        next_time = min(current + SECONDS_PER_WEEK, stop)
+        yield current, next_time
+        current = next_time
 
 def get_cfg(description, extra=None):
-    """Parse the common CLI flags and return (cfg, args). `extra(parser)` adds script-specific flags."""
     ap = argparse.ArgumentParser(description=description,
                                  formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--config", default=str(ROOT / "config.yaml"))
