@@ -1,4 +1,4 @@
-"""prepare seismic waveforms and apply instrument response removal, detrending, filtering, and deepdenoiser processing"""
+"""Prepare seismic waveforms, correct instrument gain, filter, and denoise."""
 from __future__ import annotations
 
 import logging
@@ -11,13 +11,28 @@ log = logging.getLogger(__name__)
 class NoStationDataError(ValueError):
     """Raised when a station has no usable waveform data"""
 
-# remove instrument response and get raw data 
+def correct_instrument(tr: Trace, inv: Inventory, method: str = "remove_sensitivity") -> Trace:
+    """Correct a trace in place using the configured instrument correction."""
+    if method == "remove_sensitivity":
+        sensitivity = inv.get_response(tr.id, tr.stats.starttime).instrument_sensitivity
+        if sensitivity is None or (sensitivity.input_units or "").upper() != "M/S":
+            raise ValueError(f"{tr.id}: sensitivity input units must be m/s for velocity plots")
+        tr.remove_sensitivity(inventory=inv)
+    elif method == "remove_response":
+        tr.remove_response(inventory=inv, output="VEL")
+    else:
+        raise ValueError(f"Unknown instrument correction: {method}")
+    return tr
+
+
+# Correct instrument gain and get raw velocity data.
 def prepare_station(raw_stream: Stream, inv: Inventory, cfg: Config, station: str, start=None, stop=None,) -> Tuple[Trace, Trace]:
     st = raw_stream.select(channel=cfg.data.component).copy()
     if len(st) == 0:
         raise NoStationDataError(f"{station}: no {cfg.data.component} data returned")
 
-    st.remove_response(inventory=inv, output="VEL")
+    for tr in st:
+        correct_instrument(tr, inv, cfg.data.instrument_correction)
 
     if len(st) > 1:
         log.warning("%s has %d %s pieces (data gap) -- merging, gaps filled with 0", station,len(st), cfg.data.component)

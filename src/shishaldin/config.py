@@ -22,6 +22,7 @@ class DataConfig:
     stop_time: str = "2025-11-01T00:12:00"
     edge_trim_seconds: float = 5.0
     cache_dir: str = "cache"
+    instrument_correction: str = "remove_sensitivity"
 
 
 @dataclass
@@ -142,6 +143,8 @@ class Config:
     # ---- checks / io ----------------------------------------------------
     def validate(self) -> None:
         d, t = self.data, self.trigger
+        if d.instrument_correction not in ("remove_response", "remove_sensitivity"):
+            raise ValueError("data.instrument_correction must be remove_response or remove_sensitivity")
         if d.primary_station not in d.stations:
             raise ValueError(f"primary_station {d.primary_station!r} not in stations {d.stations}")
         if self.start >= self.stop:
