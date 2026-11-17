@@ -34,7 +34,7 @@ from shishaldin.processing import (NoStationDataError, denoise_trace, detrend_tr
 
 PIPELINES = ("denoise_then_filter", "filter_then_denoise")
 FILTERED_TYPE = "bandpass"
-DENOISED_TYPE = "bandpass"
+DENOISED_TYPE = "highpass"
 SECONDS_PER_day = 7 * 24 * 60 * 60
 log = logging.getLogger("stage1")
 
