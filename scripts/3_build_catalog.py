@@ -5,7 +5,7 @@ import logging
 import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
-from obspy import UTCDateTime, read
+from obspy import UTCDateTime
 from scipy import signal as scipy_signal
 
 from _common import get_cfg
@@ -30,13 +30,8 @@ DEFAULT_GAP_BUFFER_SECONDS = 60
 
 
 # functions
-def load_weekly_traces(week_dir, kind):
-    traces = {}
-    for station in STATIONS:
-        path = week_dir / "traces" / f"{kind}.{station}.mseed"
-        if path.exists():
-            traces[station] = read(str(path))[0]
-    return traces
+def load_weekly_traces(cfg, pipeline, week_number, kind):
+    return store.load_weekly_traces(cfg, pipeline, week_number, kind)
 
 def load_weekly_detections(week_dir):
     path = week_dir / "detections.npz"
@@ -66,12 +61,12 @@ def validate_trigger_params(week_dir, cfg):
 
     return summary
 
-def load_gaps(week_dir, buffer_seconds):
+def load_gaps(cfg, pipeline, week_number, week_dir, buffer_seconds):
     """
     Load the gap intervals recorded by Stage 1, widened by buffer_seconds on
     each side. Returns {station: [(start, end), ...]}.
     """
-    path = week_dir / "gaps.json"
+    path = store.weekly_gaps_path(cfg, pipeline, week_number)
 
     if not path.exists():
         LOGGER.warning(
@@ -490,12 +485,19 @@ def build_one(cfg, pipeline, make_figures=False):
 
     for week_dir in weekly_dirs:
         LOGGER.info("[%s] Building catalog for %s", pipeline, week_dir.name)
+        week_number = int(week_dir.name.removeprefix("week_"))
         detection_summary = validate_trigger_params(week_dir, cfg)
         gap_buffer = detection_summary.get("gap_buffer_seconds", DEFAULT_GAP_BUFFER_SECONDS)
-        gaps_by_station = load_gaps(week_dir, gap_buffer)
+        gaps_by_station = load_gaps(
+            cfg, pipeline, week_number, week_dir, gap_buffer
+        )
         detections = load_weekly_detections(week_dir)
-        filtered_traces = load_weekly_traces(week_dir, "filtered")
-        denoised_traces = load_weekly_traces(week_dir, "denoised")
+        filtered_traces = load_weekly_traces(
+            cfg, pipeline, week_number, "filtered"
+        )
+        denoised_traces = load_weekly_traces(
+            cfg, pipeline, week_number, "denoised"
+        )
 
         if (
             "triggers_filtered_primary" not in detections

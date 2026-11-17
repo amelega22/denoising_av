@@ -5,21 +5,20 @@ in a single run:
     denoise_then_filter:  raw -> denoise -> bandpass
     filter_then_denoise:  raw -> bandpass -> denoise
 
-Each pipeline is saved in its own output folder, named after the pipeline. The
-raw and filtered (bandpass) traces are identical for both, so they are computed
-once and saved in both folders, which keeps each folder complete on its own.
+Filtered traces and gap metadata are shared between the two pipelines and are
+saved once per weekly batch. Each pipeline stores only its distinct denoised
+traces.
 
 Processes the time period in weekly batches,  batch is downloaded with padding
 on both sides, split at data gaps, and every continuous segment is processed
 separately (response removal, taper, filter, denoise) so that gaps never pass
 through a filter or the denoiser. The processed segments are rejoined (gaps
 filled with zeros only at this last step), trimmed to the batch window, and saved
-together with a record of where the gaps are. Daily traces are then stitched and
-the final raw, filtered, and denoised traces are saved with waveform and
-spectrogram figures.
+together with a record of where the gaps are. Full-period traces and figures are
+created only when --stitch-full is requested because they duplicate the weekly
+data and can use substantial memory and disk space.
 """
 
-import json
 import logging
 
 import matplotlib.pyplot as plt
@@ -75,24 +74,6 @@ def stitch_weekly_traces(weekly_traces, station, kind):
         raise RuntimeError(f"Could not stitch {kind} traces for {station}: "f"got {len(combined)} separate traces.")
 
     return combined[0]
-
-def save_weekly_traces(cfg, pipeline, week_number, kind, traces):
-    week_dir = store.weekly_dir(cfg, pipeline, week_number)
-    traces_dir = week_dir / "traces"
-    traces_dir.mkdir(parents=True, exist_ok=True)
-
-    for station, trace in traces.items():
-        Stream([trace]).write(str(traces_dir / f"{kind}.{station}.mseed"),format="MSEED")
-
-
-def save_weekly_gaps(cfg, pipeline, week_number, gaps_by_station):
-    week_dir = store.weekly_dir(cfg, pipeline, week_number)
-    week_dir.mkdir(parents=True, exist_ok=True)
-
-    payload = {station: [{"start": str(start), "end": str(end)} for start, end in gaps] for station, gaps in gaps_by_station.items()}
-
-    with open(week_dir / "gaps.json", "w") as f:
-        json.dump(payload, f, indent=2)
 
 def prepare_segments(stream, inv, station, instrument_correction="remove_sensitivity"):
     vertical = stream.select(component="Z").copy()
@@ -173,14 +154,17 @@ def denoise_segment(model, cfg, pipeline, tapered, filtered, station, index, dia
     return result
 
 
-def process_segments(segments, model, cfg, station, diagnostics_dir=None):
+def process_segments(
+    segments, model, cfg, station, diagnostics_dir=None, include_raw=True
+):
     raw_pieces = []
     filtered_pieces = []
     denoised_pieces = {pipeline: [] for pipeline in PIPELINES}
 
     for index, segment in enumerate(segments):
-        # Instrument-corrected, untapered copy for the raw output
-        raw_pieces.append(segment.copy())
+        if include_raw:
+            # Instrument-corrected, untapered copy for optional full output.
+            raw_pieces.append(segment.copy())
 
         # Taper the segment ends so gap edges do not ring through the filters
         tapered = segment.copy()
@@ -245,6 +229,12 @@ def add_options(parser):
     add_refresh(parser)
     parser.add_argument("--diagnostics", action="store_true",
                         help="save intermediate waveforms, spectral plots and checks per segment")
+    parser.add_argument(
+        "--stitch-full",
+        action="store_true",
+        help=("also build and save full-period raw/filtered/denoised traces "
+              "and waveform figures (uses substantial disk space and memory)"),
+    )
 
 
 def main():
@@ -252,10 +242,14 @@ def main():
     inv = get_inventory(cfg, args.refresh)
     model = load_denoiser(cfg)
 
-    # raw and filtered are shared by both pipelines, denoised is per pipeline
-    weekly_raw = {}
-    weekly_filtered = {}
-    weekly_denoised = {pipeline: {} for pipeline in PIPELINES}
+    # Weekly files are the canonical processing outputs. Full-period traces are
+    # accumulated only when explicitly requested because they duplicate the
+    # weekly data and can consume large amounts of memory and disk space.
+    station_week_counts = {}
+    if args.stitch_full:
+        weekly_raw = {}
+        weekly_filtered = {}
+        weekly_denoised = {pipeline: {} for pipeline in PIPELINES}
 
     windows = list(iter_time_windows(cfg.start, cfg.stop))
 
@@ -273,7 +267,7 @@ def main():
             week_stop,
         )
 
-        week_raw = {}
+        week_raw = {} if args.stitch_full else None
         week_filtered = {}
         week_denoised = {pipeline: {} for pipeline in PIPELINES}
         week_gaps = {}
@@ -298,7 +292,8 @@ def main():
                 diagnostics_dir = (cfg.run_dir / "diagnostics" / f"week_{week_number:02d}"
                                    if args.diagnostics else None)
                 raw_pieces, filtered_pieces, denoised_pieces = process_segments(
-                    segments, model, cfg, station, diagnostics_dir)
+                    segments, model, cfg, station, diagnostics_dir,
+                    include_raw=args.stitch_full)
 
                 gaps = find_gaps(filtered_pieces, week_start, week_stop)
                 gap_seconds = sum(float(end - start) for start, end in gaps)
@@ -315,7 +310,11 @@ def main():
                 )
 
                 # rejoin and trim off the padding
-                week_raw[station] = rebuild_trace(raw_pieces, week_start, week_stop,is_last_week, station, "raw")
+                if args.stitch_full:
+                    week_raw[station] = rebuild_trace(
+                        raw_pieces, week_start, week_stop, is_last_week,
+                        station, "raw"
+                    )
                 week_filtered[station] = rebuild_trace(filtered_pieces, week_start, week_stop,is_last_week, station, "filtered")
 
                 for pipeline in PIPELINES:
@@ -346,29 +345,40 @@ def main():
                 f"At least {cfg.coincidence_sum} are required."
             )
 
-        # save weekly outputs into each pipeline's folder
-        for pipeline in PIPELINES:
-            for kind, traces in (("raw", week_raw), ("filtered", week_filtered), ("denoised", week_denoised[pipeline])):
-                save_weekly_traces(cfg, pipeline, week_number, kind, traces)
-
-            save_weekly_gaps(cfg, pipeline, week_number, week_gaps)
-
-        for station, trace in week_raw.items():
-            weekly_raw.setdefault(station, []).append(trace)
-
-        for station, trace in week_filtered.items():
-            weekly_filtered.setdefault(station, []).append(trace)
+        # Filtered traces and gaps are identical for both pipelines, so keep one
+        # shared copy. Only denoised traces are pipeline-specific.
+        store.save_weekly_traces(
+            cfg, PIPELINES[0], week_number, "filtered", week_filtered
+        )
+        store.save_weekly_gaps(cfg, week_number, week_gaps)
 
         for pipeline in PIPELINES:
-            for station, trace in week_denoised[pipeline].items():
-                weekly_denoised[pipeline].setdefault(station, []).append(trace)
+            store.save_weekly_traces(
+                cfg, pipeline, week_number, "denoised",
+                week_denoised[pipeline]
+            )
+
+        for station in week_filtered:
+            station_week_counts[station] = station_week_counts.get(station, 0) + 1
+
+        if args.stitch_full:
+            for station, trace in week_raw.items():
+                weekly_raw.setdefault(station, []).append(trace)
+            for station, trace in week_filtered.items():
+                weekly_filtered.setdefault(station, []).append(trace)
+            for pipeline in PIPELINES:
+                for station, trace in week_denoised[pipeline].items():
+                    weekly_denoised[pipeline].setdefault(station, []).append(trace)
 
         log.info("finished week %02d", week_number)
 
     # only include stations successfully processed in every week
     expected_weeks = len(windows)
 
-    complete_stations = sorted(station for station, traces in weekly_filtered.items() if len(traces) == expected_weeks)
+    complete_stations = sorted(
+        station for station, count in station_week_counts.items()
+        if count == expected_weeks
+    )
 
     if len(complete_stations) < cfg.coincidence_sum:
         raise RuntimeError(
@@ -378,13 +388,22 @@ def main():
             "are required."
         )
 
-    incomplete_stations = sorted(set(weekly_filtered) - set(complete_stations))
+    incomplete_stations = sorted(set(station_week_counts) - set(complete_stations))
 
     if incomplete_stations:
         log.warning(
             "excluding stations without data in every week: %s",
             incomplete_stations,
         )
+
+    for pipeline in PIPELINES:
+        cfg.save(store.stage_dir(cfg, pipeline) / "config_used.yaml")
+
+    if not args.stitch_full:
+        print(f"saved canonical weekly traces to {cfg.run_dir}")
+        print("full-period traces skipped (use --stitch-full to create them)")
+        print(f"run folder: {cfg.run_dir}")
+        return
 
     # Stitch each station's weekly traces into one full-period trace.
     # Raw and filtered are stitched once and reused for both pipelines.
@@ -404,8 +423,6 @@ def main():
     for pipeline in PIPELINES:
         for kind, traces in (("raw", raw), ("filtered", filtered), ("denoised", denoised[pipeline])):
             store.save_traces(cfg, pipeline, kind, traces)
-
-        cfg.save(store.stage_dir(cfg, pipeline) / "config_used.yaml")
 
         if pipeline == "denoise_then_filter":
             denoised_label = f"Denoised Raw + {DENOISED_TYPE}"

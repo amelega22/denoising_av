@@ -27,6 +27,94 @@ def weekly_dir(cfg: Config, pipeline: str, week_number: int) -> Path:
     d.mkdir(parents=True, exist_ok=True)
     return d
 
+def shared_weekly_dir(cfg: Config, week_number: int) -> Path:
+    """Folder for weekly artifacts that are identical in both pipelines."""
+    d = cfg.run_dir / "weekly" / f"week_{week_number:02d}"
+    d.mkdir(parents=True, exist_ok=True)
+    return d
+
+def weekly_trace_dir(
+    cfg: Config, pipeline: str, week_number: int, kind: str
+) -> Path:
+    """Return the canonical folder for a weekly waveform type.
+
+    Raw and filtered waveforms are shared by both pipelines. Denoised
+    waveforms remain pipeline-specific.
+    """
+    if kind in {"raw", "filtered"}:
+        base = shared_weekly_dir(cfg, week_number)
+    elif kind == "denoised":
+        base = weekly_dir(cfg, pipeline, week_number)
+    else:
+        raise ValueError(f"Unsupported weekly trace kind: {kind!r}")
+
+    d = base / "traces"
+    d.mkdir(parents=True, exist_ok=True)
+    return d
+
+def save_weekly_traces(
+    cfg: Config,
+    pipeline: str,
+    week_number: int,
+    kind: str,
+    traces: Dict[str, Trace],
+) -> None:
+    """Replace one complete weekly trace set in its canonical location."""
+    d = weekly_trace_dir(cfg, pipeline, week_number, kind)
+
+    # A rerun may have fewer usable/configured stations. Remove files from the
+    # previous attempt so downstream stages cannot silently consume stale data.
+    for old_path in d.glob(f"{kind}.*.mseed"):
+        old_path.unlink()
+
+    for station, trace in traces.items():
+        Stream([trace]).write(
+            str(d / f"{kind}.{station}.mseed"), format="MSEED"
+        )
+
+def load_weekly_traces(
+    cfg: Config, pipeline: str, week_number: int, kind: str
+) -> Dict[str, Trace]:
+    """Load weekly traces, with fallback support for the legacy layout."""
+    canonical = weekly_trace_dir(cfg, pipeline, week_number, kind)
+    paths = sorted(canonical.glob(f"{kind}.*.mseed"))
+
+    if not paths and kind in {"raw", "filtered"}:
+        legacy = weekly_dir(cfg, pipeline, week_number) / "traces"
+        paths = sorted(legacy.glob(f"{kind}.*.mseed"))
+
+    configured = set(cfg.data.stations)
+    traces = {}
+    for path in paths:
+        station = path.name[len(kind) + 1:-len(".mseed")]
+        if station not in configured:
+            continue
+        stream = read(str(path))
+        if len(stream) != 1:
+            raise RuntimeError(f"Expected one trace in {path}, found {len(stream)}")
+        traces[station] = stream[0]
+
+    return traces
+
+def save_weekly_gaps(cfg: Config, week_number: int, gaps_by_station: dict) -> Path:
+    path = shared_weekly_dir(cfg, week_number) / "gaps.json"
+    payload = {
+        station: [
+            {"start": str(start), "end": str(end)} for start, end in gaps
+        ]
+        for station, gaps in gaps_by_station.items()
+    }
+    with open(path, "w") as fh:
+        json.dump(payload, fh, indent=2)
+    return path
+
+def weekly_gaps_path(cfg: Config, pipeline: str, week_number: int) -> Path:
+    """Find shared gap metadata, falling back to a legacy pipeline copy."""
+    canonical = shared_weekly_dir(cfg, week_number) / "gaps.json"
+    if canonical.exists():
+        return canonical
+    return weekly_dir(cfg, pipeline, week_number) / "gaps.json"
+
 def comparison_dir(cfg: Config) -> Path:
     d = cfg.run_dir / "comparison"
     d.mkdir(parents=True, exist_ok=True)

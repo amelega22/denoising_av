@@ -43,6 +43,30 @@ Run the complete processing workflow from the repository root:
 python scripts/run_all.py
 ```
 
+Weekly files are the canonical waveform outputs. The workflow stores one shared
+filtered trace per station/week plus one denoised trace per pipeline; it does not
+store processed raw waveforms or duplicate full-period traces by default. Gap
+metadata is also shared between pipelines. This layout keeps runs resumable
+without multiplying storage for long time periods.
+
+To additionally create the legacy-style full-period raw, filtered, and denoised
+traces and waveform figures, use:
+
+```bash
+python scripts/run_all.py --stitch-full
+```
+
+Stage 2 stores compact trigger and coincidence arrays by default. Full STA/LTA
+characteristic functions can be retained for diagnostics with `--save-cft`, but
+they can be very large for week-long traces:
+
+```bash
+python scripts/run_all.py --save-cft
+```
+
+The download cache remains enabled so interrupted or repeated runs do not need
+to fetch the source waveform data again.
+
 The first processing run may download seismic data and the pretrained
 SeisBench denoising model, so internet access is required.
 

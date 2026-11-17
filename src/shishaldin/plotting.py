@@ -685,17 +685,16 @@ def main():
 
         reference_week_dir = reference_weeks[week_name]
         estimate_week_dir = estimate_weeks[week_name]
+        week_number = int(week_name.removeprefix("week_"))
 
         # Reference: bandpass-filtered traces from Stage 1A.
-        reference_traces = load_weekly_traces(
-            reference_week_dir,
-            "filtered",
+        reference_traces = store.load_weekly_traces(
+            cfg, "filter_then_denoise", week_number, "filtered"
         )
 
         # Estimate: denoised + highpass-filtered traces from Stage 1B.
-        estimate_traces = load_weekly_traces(
-            estimate_week_dir,
-            "denoised",
+        estimate_traces = store.load_weekly_traces(
+            cfg, "denoise_then_filter", week_number, "denoised"
         )
 
         reference_detections = load_weekly_detections(

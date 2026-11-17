@@ -4,7 +4,7 @@ import json
 import numpy as np
 import pandas as pd
 import matplotlib.pyplot as plt
-from obspy import read, UTCDateTime
+from obspy import UTCDateTime
 from _common import get_cfg
 from shishaldin import store
 
@@ -397,19 +397,11 @@ def plot_example_waveforms(catalog, cfg, pipeline, output_dir, max_events=3):
 
         traces = {}
         for kind in ("filtered", "denoised"):
-            path = (store.weekly_dir(cfg, pipeline, week)/ "traces" / f"{kind}.{station}.mseed")
-
-            if not path.exists():
+            weekly = store.load_weekly_traces(cfg, pipeline, week, kind)
+            if station not in weekly:
                 traces = {}
                 break
-
-            stream = read(str(path))
-            stream.merge(method=1, fill_value=0)
-            if not stream:
-                traces = {}
-                break
-
-            trace = stream[0].copy()
+            trace = weekly[station].copy()
             trace.trim(start, end, pad=False)
             if trace.stats.npts == 0:
                 traces = {}

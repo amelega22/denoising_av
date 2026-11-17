@@ -1,7 +1,8 @@
 """
 Run independent STA/LTA network-coincidence detections on the filtered and denoised waveform branches for each weekly batch produced by 1_process_data.py
 
-Runs for both Stage 1 pipelines, each read from its own output folder:
+Runs for both Stage 1 pipelines, using the shared filtered traces and each
+pipeline's own denoised traces:
     denoise_then_filter   raw -> denoise -> bandpass
     filter_then_denoise   raw -> bandpass -> denoise
 
@@ -14,7 +15,7 @@ import json
 import logging
 
 import numpy as np
-from obspy import UTCDateTime, read
+from obspy import UTCDateTime
 
 from _common import get_cfg
 from shishaldin import store
@@ -27,27 +28,8 @@ PIPELINES = ("denoise_then_filter", "filter_then_denoise")
 GAP_BUFFER_SECONDS = 60
 
 
-def load_weekly_traces(week_dir, kind):
-    traces_dir = week_dir / "traces"
-
-    if not traces_dir.exists():
-        raise FileNotFoundError(f"Missing weekly traces directory: {traces_dir}")
-
-    traces = {}
-
-    for path in sorted(traces_dir.glob(f"{kind}.*.mseed")):
-        station = path.name[len(kind) + 1:-len(".mseed")]
-        stream = read(str(path))
-
-        if len(stream) != 1:
-            raise RuntimeError(f"Expected one trace in {path}, found {len(stream)}")
-
-        traces[station] = stream[0]
-
-    return traces
-
-def load_gaps(week_dir):
-    path = week_dir / "gaps.json"
+def load_gaps(cfg, pipe, week_number, week_dir):
+    path = store.weekly_gaps_path(cfg, pipe, week_number)
     if not path.exists():
         logger.warning(
             "%s has no gaps.json; triggers near data gaps will not be removed. "
@@ -148,19 +130,26 @@ def prepare_station_results(results):
     return summary
 
 
-def save_weekly_detections(week_dir, cft_f, cft_d, trig_f, trig_d, filtered_results, denoised_results, filtered_coincidences, denoised_coincidences, summary):
-    arrays = {"cft_filtered_primary": cft_f, "cft_denoised_primary": cft_d, "triggers_filtered_primary": np.asarray(trig_f, dtype=int).reshape(-1, 2), "triggers_denoised_primary": np.asarray(trig_d, dtype=int).reshape(-1, 2)}
+def save_weekly_detections(week_dir, cft_f, cft_d, trig_f, trig_d, filtered_results, denoised_results, filtered_coincidences, denoised_coincidences, summary, save_cft=False):
+    arrays = {"triggers_filtered_primary": np.asarray(trig_f, dtype=int).reshape(-1, 2), "triggers_denoised_primary": np.asarray(trig_d, dtype=int).reshape(-1, 2)}
 
-    # save  characteristic functions and independent triggers for every station and for both waveform branches.
+    if save_cft:
+        arrays["cft_filtered_primary"] = np.asarray(cft_f)
+        arrays["cft_denoised_primary"] = np.asarray(cft_d)
+
+    # Independent triggers are required downstream; full characteristic
+    # functions are diagnostic-only and therefore opt-in.
     for station, result in filtered_results.items():
-        arrays[f"cft_filtered_{station}"] = np.asarray(result["cft"])
         arrays[f"triggers_filtered_{station}"] = np.asarray(result["triggers"],dtype=int).reshape(-1, 2)
         arrays[f"coincident_flags_filtered_{station}"] = np.asarray(result["coincident_flags"],dtype=bool)
+        if save_cft:
+            arrays[f"cft_filtered_{station}"] = np.asarray(result["cft"])
 
     for station, result in denoised_results.items():
-        arrays[f"cft_denoised_{station}"] = np.asarray(result["cft"])
         arrays[f"triggers_denoised_{station}"] = np.asarray(result["triggers"], dtype=int).reshape(-1, 2)
         arrays[f"coincident_flags_denoised_{station}"] = np.asarray(result["coincident_flags"],dtype=bool)
+        if save_cft:
+            arrays[f"cft_denoised_{station}"] = np.asarray(result["cft"])
 
     np.savez_compressed(week_dir / "detections.npz", **arrays)
 
@@ -172,10 +161,14 @@ def save_weekly_detections(week_dir, cft_f, cft_d, trig_f, trig_d, filtered_resu
     with open(week_dir / "detections_summary.json", "w") as f:
         json.dump(summary, f, indent=2, default=str)
 
-def detect_one_week(cfg, pipe, week_dir, week_number):
+def detect_one_week(cfg, pipe, week_dir, week_number, save_cft=False):
     logger.info("Processing %s", week_dir.name)
-    filtered = load_weekly_traces(week_dir, "filtered")
-    denoised = load_weekly_traces(week_dir, "denoised")
+    filtered = store.load_weekly_traces(
+        cfg, pipe, week_number, "filtered"
+    )
+    denoised = store.load_weekly_traces(
+        cfg, pipe, week_number, "denoised"
+    )
 
     if not filtered:
         raise RuntimeError(f"No filtered traces found in {week_dir}")
@@ -191,7 +184,7 @@ def detect_one_week(cfg, pipe, week_dir, week_number):
 
     primary = (cfg.data.primary_station if cfg.data.primary_station in filtered else stations[0])
 
-    gaps_by_station = load_gaps(week_dir)
+    gaps_by_station = load_gaps(cfg, pipe, week_number, week_dir)
     primary_gaps = gaps_by_station.get(primary, [])
 
     # Run independent network-coincidence detections
@@ -265,6 +258,7 @@ def detect_one_week(cfg, pipe, week_dir, week_number):
         "n_events_filtered": int(len(trig_f)),
         "n_events_denoised": int(len(trig_d)),
         "gap_buffer_seconds": GAP_BUFFER_SECONDS,
+        "characteristic_functions_saved": bool(save_cft),
         "removed_near_gaps": {
             "filtered_network_triggers": int(n_network_f_before - len(trig_f)),"denoised_network_triggers": int(n_network_d_before - len(trig_d)),"filtered_network_coincidences": int(n_filtered_coincidences_removed),
             "denoised_network_coincidences": int(n_denoised_coincidences_removed),
@@ -274,11 +268,11 @@ def detect_one_week(cfg, pipe, week_dir, week_number):
         "trigger_params": store.trigger_params(cfg),
         **store.provenance(),
     }
-    save_weekly_detections(week_dir,cft_f,cft_d,trig_f,trig_d,filtered_results,denoised_results,filtered_coincidences,denoised_coincidences,summary)
+    save_weekly_detections(week_dir,cft_f,cft_d,trig_f,trig_d,filtered_results,denoised_results,filtered_coincidences,denoised_coincidences,summary,save_cft=save_cft)
     print("Saved weekly detections")
 
 
-def detect_one(cfg, pipe):
+def detect_one(cfg, pipe, save_cft=False):
     weekly_root = store.stage_dir(cfg, pipe) / "weekly"
 
     if not weekly_root.exists():
@@ -297,16 +291,23 @@ def detect_one(cfg, pipe):
         pipe,
     )
 
-    for week_number, week_dir in enumerate(week_dirs, start=1):
-        logger.info("Week %02d/%02d: %s",week_number,len(week_dirs),week_dir.name,)
-        detect_one_week(cfg,pipe,week_dir,week_number)
+    for position, week_dir in enumerate(week_dirs, start=1):
+        week_number = int(week_dir.name.removeprefix("week_"))
+        logger.info("Week %02d/%02d: %s",position,len(week_dirs),week_dir.name,)
+        detect_one_week(cfg,pipe,week_dir,week_number,save_cft=save_cft)
 
 
 def main():
-    cfg, _args = get_cfg(__doc__)
+    def extra(parser):
+        parser.add_argument(
+            "--save-cft", action="store_true",
+            help="save full STA/LTA characteristic arrays (large)",
+        )
+
+    cfg, args = get_cfg(__doc__, extra=extra)
 
     for pipe in PIPELINES:
-        detect_one(cfg, pipe)
+        detect_one(cfg, pipe, save_cft=args.save_cft)
 
 
 if __name__ == "__main__":

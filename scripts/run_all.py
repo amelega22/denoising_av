@@ -6,6 +6,8 @@ Run the whole workflow with one command:
 Steps run in order and the run stops at the first one that fails. Options:
 
     --refresh        passed to the Stage 1 script only (re-download data)
+    --stitch-full    passed to Stage 1 (save duplicate full-period traces)
+    --save-cft       passed to Stage 2 (save large STA/LTA arrays)
     --figures        passed to the catalog script only (save catalog figures)
     --start-at N     start from step N (1-4), e.g. to resume after a failure
 
@@ -41,6 +43,8 @@ def main():
         formatter_class=argparse.RawDescriptionHelpFormatter,
     )
     parser.add_argument("--refresh", action="store_true")
+    parser.add_argument("--stitch-full", action="store_true")
+    parser.add_argument("--save-cft", action="store_true")
     parser.add_argument("--figures", action="store_true")
     parser.add_argument(
         "--start-at", type=int, default=1, choices=range(1, len(STEPS) + 1),
@@ -59,6 +63,8 @@ def main():
 
     flags = {
         "refresh": ["--refresh"] if args.refresh else [],
+        "stitch_full": ["--stitch-full"] if args.stitch_full else [],
+        "save_cft": ["--save-cft"] if args.save_cft else [],
         "figures": ["--figures"] if args.figures else [],
     }
 
@@ -74,6 +80,8 @@ def main():
             str(script_dir / name),
             *passthrough,
             *(flags[flag] if flag else []),
+            *(flags["stitch_full"] if number == 1 else []),
+            *(flags["save_cft"] if number == 2 else []),
         ]
 
         print(f"\n{'=' * 70}")
