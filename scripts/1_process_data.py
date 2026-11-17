@@ -1,5 +1,5 @@
 """
-Load, remove response, bandpass filter raw data, and denoise the data both ways
+Load, correct instrument gain, bandpass filter raw data, and denoise the data both ways
 in a single run:
 
     denoise_then_filter:  raw -> denoise -> bandpass
@@ -28,9 +28,10 @@ from obspy.clients.fdsn.header import FDSNNoDataException
 import numpy as np
 from _common import add_refresh, get_cfg
 from shishaldin import store
+from shishaldin.diagnostics import check_trace, save_denoising_diagnostics
 from shishaldin.data import get_inventory, get_raw_stream
 from shishaldin.plotting import plot_waveforms_spectrograms
-from shishaldin.processing import (NoStationDataError, denoise_trace, detrend_trace, filter_trace, load_denoiser)
+from shishaldin.processing import (NoStationDataError, correct_instrument, denoise_trace, detrend_trace, filter_trace, load_denoiser)
 
 PIPELINES = ("denoise_then_filter", "filter_then_denoise")
 FILTERED_TYPE = "bandpass"
@@ -93,7 +94,7 @@ def save_weekly_gaps(cfg, pipeline, week_number, gaps_by_station):
     with open(week_dir / "gaps.json", "w") as f:
         json.dump(payload, f, indent=2)
 
-def prepare_segments(stream, inv, station):
+def prepare_segments(stream, inv, station, instrument_correction="remove_sensitivity"):
     vertical = stream.select(component="Z").copy()
 
     if len(vertical) == 0:
@@ -114,18 +115,27 @@ def prepare_segments(stream, inv, station):
             n_dropped += 1
             continue
 
-        piece.remove_response(inventory=inv, output="VEL")
+        correct_instrument(piece, inv, instrument_correction)
         segments.append(piece)
 
     return segments, n_dropped
 
 
-def denoise_segment(model, cfg, pipeline, tapered, filtered, station, index):
+def denoise_segment(model, cfg, pipeline, tapered, filtered, station, index, diagnostics_dir=None):
     if pipeline == "denoise_then_filter":
         detrended = detrend_trace(tapered.copy())
     else:
         detrended = detrend_trace(filtered.copy())
+    check_trace(detrended)
+    preprocessed = None
+    if diagnostics_dir is not None:
+        # Mirror SeisBench preprocessing on a copy; leave the actual pipeline intact.
+        preprocessed = model.annotate_stream_pre(
+            Stream([detrended.copy()]), dict(model.default_args)
+        )[0]
+        check_trace(preprocessed)
     denoised_raw = denoise_trace(model, detrended)
+    check_trace(denoised_raw)
 
     log.debug(
         "%s %s segment %d: sampling rates input=%.2f Hz, model=%.2f Hz, "
@@ -148,18 +158,28 @@ def denoise_segment(model, cfg, pipeline, tapered, filtered, station, index):
         )
 
     if pipeline == "denoise_then_filter":
-        return filter_trace(denoised_raw, cfg, DENOISED_TYPE, detrend=False, trim=False)
+        result = filter_trace(denoised_raw, cfg, DENOISED_TYPE, detrend=False, trim=False)
+    else:
+        result = denoised_raw
 
-    return denoised_raw
+    check_trace(result)
+    if diagnostics_dir is not None:
+        save_denoising_diagnostics(
+            diagnostics_dir / pipeline / f"{station}.segment_{index:03d}",
+            {"input": detrended, "model_preprocessed": preprocessed,
+             "model_output": denoised_raw, "final_output": result},
+            model, cfg,
+        )
+    return result
 
 
-def process_segments(segments, model, cfg, station):
+def process_segments(segments, model, cfg, station, diagnostics_dir=None):
     raw_pieces = []
     filtered_pieces = []
     denoised_pieces = {pipeline: [] for pipeline in PIPELINES}
 
     for index, segment in enumerate(segments):
-        # Response-removed, untapered copy for the raw output
+        # Instrument-corrected, untapered copy for the raw output
         raw_pieces.append(segment.copy())
 
         # Taper the segment ends so gap edges do not ring through the filters
@@ -170,7 +190,7 @@ def process_segments(segments, model, cfg, station):
         filtered_pieces.append(filtered)
         for pipeline in PIPELINES:
             denoised_pieces[pipeline].append(
-                denoise_segment(model, cfg, pipeline, tapered, filtered, station, index))
+                denoise_segment(model, cfg, pipeline, tapered, filtered, station, index, diagnostics_dir))
 
     return raw_pieces, filtered_pieces, denoised_pieces
 
@@ -221,8 +241,14 @@ def rebuild_trace(pieces, start, stop, is_last_week, station, kind):
     return trim_week(stream[0], start, stop, is_last_week)
 
 
+def add_options(parser):
+    add_refresh(parser)
+    parser.add_argument("--diagnostics", action="store_true",
+                        help="save intermediate waveforms, spectral plots and checks per segment")
+
+
 def main():
-    cfg, args = get_cfg(__doc__, extra=add_refresh)
+    cfg, args = get_cfg(__doc__, extra=add_options)
     inv = get_inventory(cfg, args.refresh)
     model = load_denoiser(cfg)
 
@@ -262,13 +288,17 @@ def main():
                 if len(stream) == 0:
                     raise NoStationDataError(f"{station}: no waveform data returned")
 
-                segments, n_dropped = prepare_segments(stream, inv, station)
+                segments, n_dropped = prepare_segments(
+                    stream, inv, station, cfg.data.instrument_correction)
 
                 if not segments:
                     raise NoStationDataError(f"{station}: no continuous segment of at least ", f"{MIN_SEGMENT_SECONDS} s")
 
                 # filter once, denoise once per pipeline, segment by segment
-                raw_pieces, filtered_pieces, denoised_pieces = process_segments(segments, model, cfg, station)
+                diagnostics_dir = (cfg.run_dir / "diagnostics" / f"week_{week_number:02d}"
+                                   if args.diagnostics else None)
+                raw_pieces, filtered_pieces, denoised_pieces = process_segments(
+                    segments, model, cfg, station, diagnostics_dir)
 
                 gaps = find_gaps(filtered_pieces, week_start, week_stop)
                 gap_seconds = sum(float(end - start) for start, end in gaps)
