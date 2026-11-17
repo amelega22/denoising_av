@@ -19,9 +19,12 @@ def _client(cfg: Config):
 
     return Client(cfg.data.source)
 
-def padded_window(cfg: Config):
+def padded_window(cfg: Config, start=None, stop=None):
+    start = UTCDateTime(start) if start is not None else cfg.start
+    stop = UTCDateTime(stop) if stop is not None else cfg.stop
+
     pad = cfg.data.edge_trim_seconds
-    return cfg.start - pad, cfg.stop + pad
+    return start - pad, stop + pad
 
 def _cache_dir(cfg: Config) -> Path:
     d = cfg.resolve(cfg.data.cache_dir)
@@ -40,13 +43,15 @@ def get_inventory(cfg: Config, refresh: bool = False):
     inv.write(str(path), format="STATIONXML")
     return inv
 
-def get_raw_stream(cfg: Config, station: str, refresh: bool = False) -> Stream:
+def get_raw_stream(cfg: Config, station: str, refresh: bool = False, start=None, stop=None) -> Stream:
     d = cfg.data
-    t0, t1 = padded_window(cfg)
+    t0, t1 = padded_window(cfg, start, stop)
+
     chan = d.channel.replace("*", "x")
-    name = (f"{d.network}.{station}.{d.location or '--'}.{chan}."
-            f"{t0.strftime(_STAMP)}_{t1.strftime(_STAMP)}.mseed")
+
+    name = (f"{d.network}.{station}.{d.location or '--'}.{chan}."f"{t0.strftime(_STAMP)}_{t1.strftime(_STAMP)}.mseed")
     path = _cache_dir(cfg) / name
+
     if path.exists() and not refresh:
         log.info("%s: cache hit (%s)", station, path.name)
         return read(str(path))
@@ -54,5 +59,6 @@ def get_raw_stream(cfg: Config, station: str, refresh: bool = False) -> Stream:
     st = _client(cfg).get_waveforms(d.network, station, d.location, d.channel, t0, t1)
     if len(st) == 0:
         return st
-st.write(str(path), format="MSEED")
-return st
+    st.write(str(path), format="MSEED")
+    return st
+

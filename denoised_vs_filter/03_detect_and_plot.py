@@ -12,7 +12,7 @@ import logging
 import matplotlib.pyplot as plt
 import numpy as np
 from obspy import read
-from _common import STAGE1, add_pipeline, get_cfg, pipelines_from_args, require
+from _common import get_cfg
 from shishaldin import plotting as P
 from shishaldin import store
 from shishaldin.detection import analyze_station_triggers, detect
@@ -158,15 +158,22 @@ def detect_one(cfg, pipe):
         detect_one_week(cfg, pipe, week_dir, week_number)
 
 
+
 def main():
     def extra(ap):
-        add_pipeline(ap)
-    cfg, args = get_cfg(__doc__, extra=extra)
-    pipes = pipelines_from_args(args)
-    require(cfg, pipes, store.has_traces, "stage-1 traces",lambda p: f"python scripts/{STAGE1[p]}")
+        ap.add_argument("--figures", action="store_true", help="Save catalog figures.")
 
-    for pipe in pipes:
-        detect_one(cfg, pipe)
+    config, args = get_cfg("Build filtered-versus-denoised event catalog", extra=extra)
+    build_one(config, PIPELINE, make_figures=args.figures)
+
+
+if __name__ == "__main__":
+    main()
+
+
+if __name__ == "__main__":
+    main()
+
 
 
 if __name__ == "__main__":

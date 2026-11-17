@@ -75,7 +75,7 @@ def pipelines_from_args(args):
     return list(PIPELINES) if args.pipeline == "both" else [args.pipeline]
 
 
-STAGE1 = {"filter_then_denoise": "01_filter_then_denoise.py",
+STAGE1 = {"filter_then_denoise": "01B_filter_then_denoise.py",
           "denoise_then_filter": "02_denoise_then_filter.py"}
 
 

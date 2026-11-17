@@ -1,7 +1,7 @@
+
 # %% Imports
 import numpy as np
 import pandas as pd
-import matplotlib.pyplot as plt
 
 from scipy import signal as scipy_signal
 from obspy import UTCDateTime, read
@@ -52,8 +52,16 @@ def load_catalog(path, detection_type):
             f"No '{detection_type}' events found in {path}"
         )
 
-    catalog["start_time"] = pd.to_datetime(catalog["start_time"])
-    catalog["end_time"] = pd.to_datetime(catalog["end_time"])
+    catalog["start_time"] = pd.to_datetime(
+        catalog["start_time"], errors="coerce"
+    )
+    catalog["end_time"] = pd.to_datetime(
+        catalog["end_time"], errors="coerce"
+    )
+
+    catalog = catalog.dropna(
+        subset=["start_time", "end_time"]
+    ).copy()
 
     for column in [
         "signal_rms", "noise_rms", "snr_db", "max_amplitude"
@@ -100,68 +108,25 @@ def catalog_rows_for_week(catalog, trace):
     ].copy()
 
 
-# %% Match catalog events by overlapping intervals
-def match_events(reference_catalog, estimate_catalog):
-    reference_rows = list(reference_catalog.iterrows())
-    estimate_rows = list(estimate_catalog.iterrows())
+# %% Find corresponding filtered catalog metrics
+def find_filtered_event(denoised_row, filtered_catalog):
+    candidates = filtered_catalog[
+        (filtered_catalog["start_time"] < denoised_row["end_time"])
+        & (filtered_catalog["end_time"] > denoised_row["start_time"])
+    ]
 
-    active = []
-    next_reference = 0
-    matches = []
+    if candidates.empty:
+        return None
 
-    for estimate_index, estimate_row in estimate_rows:
-        e_start = estimate_row["start_time"]
-        e_end = estimate_row["end_time"]
+    overlap_start = candidates["start_time"].clip(
+        lower=denoised_row["start_time"]
+    )
+    overlap_end = candidates["end_time"].clip(
+        upper=denoised_row["end_time"]
+    )
+    overlaps = overlap_end - overlap_start
 
-        while next_reference < len(reference_rows):
-            reference_index, reference_row = reference_rows[next_reference]
-
-            if reference_row["start_time"] >= e_end:
-                break
-
-            active.append((reference_index, reference_row))
-            next_reference += 1
-
-        active = [
-            item for item in active
-            if item[1]["end_time"] > e_start
-        ]
-
-        candidates = [
-            item for item in active
-            if item[1]["start_time"] < e_end
-            and item[1]["end_time"] > e_start
-        ]
-
-        if not candidates:
-            continue
-
-        # Select the reference event with the largest temporal overlap.
-        reference_index, reference_row = max(
-            candidates,
-            key=lambda item: (
-                min(item[1]["end_time"], e_end)
-                - max(item[1]["start_time"], e_start)
-            )
-        )
-
-        active = [
-            item for item in active
-            if item[0] != reference_index
-        ]
-
-        overlap_start = max(reference_row["start_time"], e_start)
-        overlap_end = min(reference_row["end_time"], e_end)
-
-        if overlap_end > overlap_start:
-            matches.append({
-                "reference": reference_row,
-                "estimate": estimate_row,
-                "start": overlap_start,
-                "end": overlap_end
-            })
-
-    return matches
+    return candidates.loc[overlaps.idxmax()]
 
 
 # %% Extract matching waveform samples
@@ -186,9 +151,7 @@ def extract_common_event_waveforms(
     if common_end <= common_start:
         raise ValueError("No common waveform coverage for this event.")
 
-    # Use the lower sampling rate as the common comparison rate.
     sampling_rate = min(ref_rate, est_rate)
-
     count = int(
         np.floor(float(common_end - common_start) * sampling_rate)
     ) + 1
@@ -224,30 +187,33 @@ def extract_common_event_waveforms(
     )
 
 
-# %% SDR and cross-correlation
+# %% SDR
 def signal_distortion_ratio(reference, estimate):
     reference = np.asarray(reference, dtype=float)
     estimate = np.asarray(estimate, dtype=float)
 
-    if reference.shape != estimate.shape:
-        raise ValueError(
-            "Reference and estimate must have the same length."
-        )
+    valid = np.isfinite(reference) & np.isfinite(estimate)
+    reference = reference[valid]
+    estimate = estimate[valid]
+
+    if len(reference) == 0:
+        return np.nan
 
     distortion_power = np.sum((reference - estimate) ** 2)
     reference_power = np.sum(reference ** 2)
 
+    if reference_power == 0:
+        return np.nan
+
     if distortion_power == 0:
         return float("inf")
-
-    if reference_power == 0:
-        return float("-inf")
 
     return float(
         10 * np.log10(reference_power / distortion_power)
     )
 
 
+# %% Cross-correlation
 def best_lag_and_correlation(
     reference, estimate, sampling_rate,
     max_lag_seconds=MAX_LAG_SECONDS
@@ -255,14 +221,19 @@ def best_lag_and_correlation(
     reference = np.asarray(reference, dtype=float)
     estimate = np.asarray(estimate, dtype=float)
 
-    if len(reference) == 0 or len(estimate) == 0:
-        raise ValueError("Cannot correlate empty waveforms.")
+    valid = np.isfinite(reference) & np.isfinite(estimate)
+    reference = reference[valid]
+    estimate = estimate[valid]
+
+    if len(reference) == 0:
+        return np.nan, np.nan
 
     reference = reference - np.mean(reference)
     estimate = estimate - np.mean(estimate)
 
+    # A constant waveform has no defined normalized correlation.
     if np.std(reference) == 0 or np.std(estimate) == 0:
-        raise ValueError("Cannot correlate constant waveforms.")
+        return np.nan, np.nan
 
     correlation = scipy_signal.correlate(
         estimate,
@@ -281,16 +252,16 @@ def best_lag_and_correlation(
         round(max_lag_seconds * sampling_rate)
     )
 
-    valid = np.abs(lags) <= max_lag_samples
-    correlation = correlation[valid]
-    lags = lags[valid]
+    valid_lags = np.abs(lags) <= max_lag_samples
+    correlation = correlation[valid_lags]
+    lags = lags[valid_lags]
 
     norm = np.sqrt(
         np.sum(reference ** 2) * np.sum(estimate ** 2)
     )
 
     if norm == 0:
-        raise ValueError("Cannot normalize cross-correlation.")
+        return np.nan, np.nan
 
     normalized = correlation / norm
     best_index = int(np.argmax(np.abs(normalized)))
@@ -302,277 +273,174 @@ def best_lag_and_correlation(
 
 
 def align_and_score(reference, estimate, sampling_rate):
+    # SDR is calculated even if cross-correlation is undefined.
     lag_samples, max_correlation = best_lag_and_correlation(
         reference,
         estimate,
         sampling_rate
     )
 
-    if lag_samples > 0:
+    if not np.isfinite(lag_samples):
+        aligned_reference = reference
+        aligned_estimate = estimate
+        lag_seconds = np.nan
+
+    elif lag_samples > 0:
         aligned_estimate = estimate[lag_samples:]
         aligned_reference = reference[:len(aligned_estimate)]
+        lag_seconds = lag_samples / sampling_rate
 
     elif lag_samples < 0:
         aligned_reference = reference[-lag_samples:]
         aligned_estimate = estimate[:len(aligned_reference)]
+        lag_seconds = lag_samples / sampling_rate
 
     else:
         aligned_reference = reference
         aligned_estimate = estimate
+        lag_seconds = 0.0
 
     n = min(len(aligned_reference), len(aligned_estimate))
 
     if n == 0:
-        raise ValueError("No samples remain after lag alignment.")
-
-    sdr_db = signal_distortion_ratio(
-        aligned_reference[:n],
-        aligned_estimate[:n]
-    )
+        sdr_db = np.nan
+    else:
+        sdr_db = signal_distortion_ratio(
+            aligned_reference[:n],
+            aligned_estimate[:n]
+        )
 
     return {
         "sdr_db": sdr_db,
         "max_correlation": max_correlation,
-        "best_lag_seconds": lag_samples / sampling_rate
+        "best_lag_seconds": lag_seconds
     }
 
 
-# %% Build one comparison row per matched catalog event
-def build_comparison_catalog(
+# %% Build one comparison row per denoised event
+def build_comparison_row(
     reference_trace,
     estimate_trace,
-    matches,
-    week_name,
-    first_event_number
+    denoised_row,
+    filtered_row,
+    week_name
 ):
-    rows = []
+    # The denoised catalog defines the event window.
+    start = denoised_row["start_time"]
+    end = denoised_row["end_time"]
 
-    for match_index, match in enumerate(matches):
-        reference_row = match["reference"]
-        estimate_row = match["estimate"]
+    if filtered_row is not None:
+        reference_signal_rms = filtered_row["signal_rms"]
+        reference_noise_rms = filtered_row["noise_rms"]
+        reference_snr = filtered_row["snr_db"]
+        reference_event_number = filtered_row["event_number"]
+        reference_start = filtered_row["start_time"].isoformat()
+        reference_end = filtered_row["end_time"].isoformat()
+    else:
+        reference_signal_rms = np.nan
+        reference_noise_rms = np.nan
+        reference_snr = np.nan
+        reference_event_number = np.nan
+        reference_start = ""
+        reference_end = ""
 
-        start = match["start"]
-        end = match["end"]
+    estimate_signal_rms = denoised_row["signal_rms"]
+    estimate_noise_rms = denoised_row["noise_rms"]
+    estimate_snr = denoised_row["snr_db"]
 
-        event_number = first_event_number + match_index
+    delta_snr = (
+        estimate_snr - reference_snr
+        if np.isfinite(estimate_snr)
+        and np.isfinite(reference_snr)
+        else np.nan
+    )
 
-        reference_metrics = {
-            "signal_rms": reference_row["signal_rms"],
-            "noise_rms": reference_row["noise_rms"],
-            "snr_db": reference_row["snr_db"]
+    try:
+        (
+            reference,
+            estimate,
+            sampling_rate,
+            common_start,
+            common_end
+        ) = extract_common_event_waveforms(
+            reference_trace,
+            estimate_trace,
+            start,
+            end
+        )
+
+        waveform_metrics = align_and_score(
+            reference,
+            estimate,
+            sampling_rate
+        )
+
+        output_start = common_start.isoformat()
+        output_end = common_end.isoformat()
+        duration = float(common_end - common_start)
+
+    except (ValueError, IndexError) as exc:
+        print(
+            f"Event {denoised_row['event_number']}: "
+            f"waveform comparison unavailable ({exc})."
+        )
+
+        waveform_metrics = {
+            "sdr_db": np.nan,
+            "max_correlation": np.nan,
+            "best_lag_seconds": np.nan
         }
 
-        estimate_metrics = {
-            "signal_rms": estimate_row["signal_rms"],
-            "noise_rms": estimate_row["noise_rms"],
-            "snr_db": estimate_row["snr_db"]
-        }
+        output_start = start.isoformat()
+        output_end = end.isoformat()
+        duration = float((end - start).total_seconds())
 
-        reference_snr = reference_metrics["snr_db"]
-        estimate_snr = estimate_metrics["snr_db"]
-
-        delta_snr = (
-            estimate_snr - reference_snr
-            if np.isfinite(reference_snr)
-            and np.isfinite(estimate_snr)
-            else np.nan
-        )
-
-        try:
-            (
-                reference,
-                estimate,
-                sampling_rate,
-                common_start,
-                common_end
-            ) = extract_common_event_waveforms(
-                reference_trace,
-                estimate_trace,
-                start,
-                end
-            )
-
-            waveform_metrics = align_and_score(
-                reference,
-                estimate,
-                sampling_rate
-            )
-
-            output_start = common_start.isoformat()
-            output_end = common_end.isoformat()
-            duration = float(common_end - common_start)
-
-        except ValueError as exc:
-            print(
-                f"Event {event_number}: waveform comparison unavailable "
-                f"({exc})."
-            )
-
-            waveform_metrics = {
-                "sdr_db": np.nan,
-                "max_correlation": np.nan,
-                "best_lag_seconds": np.nan
-            }
-
-            output_start = start.isoformat()
-            output_end = end.isoformat()
-            duration = float((end - start).total_seconds())
-
-        rows.append({
-            "event_number": event_number,
-            "week": week_name,
-            "reference_type": "bandpass_filtered",
-            "estimate_type": "denoised_highpass_filtered",
-            "start_time": output_start,
-            "end_time": output_end,
-            "duration_seconds": duration,
-            "reference_signal_rms": reference_metrics["signal_rms"],
-            "reference_noise_rms": reference_metrics["noise_rms"],
-            "reference_snr_db": reference_snr,
-            "estimate_signal_rms": estimate_metrics["signal_rms"],
-            "estimate_noise_rms": estimate_metrics["noise_rms"],
-            "estimate_snr_db": estimate_snr,
-            "delta_snr_db": delta_snr,
-            "sdr_db": waveform_metrics["sdr_db"],
-            "max_correlation": waveform_metrics["max_correlation"],
-            "best_lag_seconds": waveform_metrics["best_lag_seconds"],
-            "reference_event_number": reference_row["event_number"],
-            "estimate_event_number": estimate_row["event_number"],
-            "reference_detection_start": reference_row["start_time"].isoformat(),
-            "reference_detection_end": reference_row["end_time"].isoformat(),
-            "estimate_detection_start": estimate_row["start_time"].isoformat(),
-            "estimate_detection_end": estimate_row["end_time"].isoformat()
-        })
-
-    return pd.DataFrame(rows, columns=COLUMNS)
-
-
-# %% Plotting
-def plot_histogram(values, title, x_label, output_path):
-    values = np.asarray(values, dtype=float)
-    values = values[np.isfinite(values)]
-
-    fig, ax = plt.subplots(figsize=(8, 5))
-
-    if len(values):
-        mean = float(values.mean())
-        std = float(values.std(ddof=1)) if len(values) > 1 else 0.0
-
-        ax.hist(
-            values,
-            bins=30,
-            alpha=0.75,
-            edgecolor="black"
-        )
-
-        ax.axvspan(
-            mean - std,
-            mean + std,
-            alpha=0.20,
-            label=f"Mean ± 1 SD ({mean:.2f} ± {std:.2f})"
-        )
-
-        ax.axvline(
-            mean,
-            linestyle="-.",
-            linewidth=2,
-            label=f"Mean: {mean:.2f}"
-        )
-
-        ax.legend(fontsize=9)
-
-    else:
-        ax.text(
-            0.5, 0.5, "No finite values",
-            ha="center", va="center",
-            transform=ax.transAxes
-        )
-
-    ax.axvline(
-        0,
-        linestyle="--",
-        color="black",
-        linewidth=1.2
-    )
-
-    ax.set(
-        title=title,
-        xlabel=x_label,
-        ylabel="Matched events"
-    )
-
-    ax.grid(alpha=0.25)
-    fig.tight_layout()
-    fig.savefig(output_path, dpi=150)
-    plt.close(fig)
-
-
-def plot_metric_over_time(
-    catalog, column, title, y_label, output_path
-):
-    data = catalog[["start_time", column]].copy()
-    data[column] = pd.to_numeric(data[column], errors="coerce")
-    data = data[np.isfinite(data[column])]
-    data["start_time"] = pd.to_datetime(data["start_time"])
-    data = data.sort_values("start_time")
-
-    fig, ax = plt.subplots(figsize=(12, 5))
-
-    if len(data):
-        ax.scatter(
-            data["start_time"],
-            data[column],
-            s=15,
-            alpha=0.55
-        )
-    else:
-        ax.text(
-            0.5, 0.5, "No finite values",
-            ha="center", va="center",
-            transform=ax.transAxes
-        )
-
-    ax.set(
-        title=title,
-        xlabel="Event time",
-        ylabel=y_label
-    )
-
-    ax.grid(alpha=0.25)
-    fig.autofmt_xdate()
-    fig.tight_layout()
-    fig.savefig(output_path, dpi=150)
-    plt.close(fig)
+    return {
+        "event_number": denoised_row["event_number"],
+        "week": week_name,
+        "reference_type": "bandpass_filtered",
+        "estimate_type": "denoised_highpass_filtered",
+        "start_time": output_start,
+        "end_time": output_end,
+        "duration_seconds": duration,
+        "reference_signal_rms": reference_signal_rms,
+        "reference_noise_rms": reference_noise_rms,
+        "reference_snr_db": reference_snr,
+        "estimate_signal_rms": estimate_signal_rms,
+        "estimate_noise_rms": estimate_noise_rms,
+        "estimate_snr_db": estimate_snr,
+        "delta_snr_db": delta_snr,
+        "sdr_db": waveform_metrics["sdr_db"],
+        "max_correlation": waveform_metrics["max_correlation"],
+        "best_lag_seconds": waveform_metrics["best_lag_seconds"],
+        "reference_event_number": reference_event_number,
+        "estimate_event_number": denoised_row["event_number"],
+        "reference_detection_start": reference_start,
+        "reference_detection_end": reference_end,
+        "estimate_detection_start": start.isoformat(),
+        "estimate_detection_end": end.isoformat()
+    }
 
 
 # %% Main
 def main():
     cfg, _args = get_cfg(__doc__)
 
-    reference_catalog_path = (
-        store.stage_dir(cfg, "filter_then_denoise") / "catalog.csv"
-    )
-
-    estimate_catalog_path = (
-        store.stage_dir(cfg, "denoise_then_filter") / "catalog.csv"
-    )
-
-    # Use only the requested detection types from each Stage 4 catalog.
-    reference_catalog = load_catalog(
-        reference_catalog_path,
-        "filtered"
-    )
-
+    # Denoised catalog defines the events and their times.
     estimate_catalog = load_catalog(
-        estimate_catalog_path,
+        store.stage_dir(cfg, "denoise_then_filter") / "catalog.csv",
         "denoised"
     )
 
-    # Load the saved waveform branches.
+    # Filtered catalog is used only for existing SNR/RMS values.
+    reference_catalog = load_catalog(
+        store.stage_dir(cfg, "filter_then_denoise") / "catalog.csv",
+        "filtered"
+    )
+
     reference_root = (
         store.stage_dir(cfg, "filter_then_denoise") / "weekly"
     )
-
     estimate_root = (
         store.stage_dir(cfg, "denoise_then_filter") / "weekly"
     )
@@ -582,7 +450,6 @@ def main():
         for path in reference_root.glob("week_*")
         if path.is_dir()
     }
-
     estimate_weeks = {
         path.name: path
         for path in estimate_root.glob("week_*")
@@ -598,17 +465,15 @@ def main():
             "No matching weekly folders were found in both pipelines."
         )
 
-    # Use the configured primary station for waveform comparisons.
     primary_station = cfg.data.primary_station
 
-    print(f"Primary waveform station: {primary_station}")
-    print(f"Filtered catalog events: {len(reference_catalog)}")
-    print(f"Denoised catalog events: {len(estimate_catalog)}")
+    print(f"Primary station: {primary_station}")
+    print(f"Denoised events to analyse: {len(estimate_catalog)}")
+    print(f"Filtered events available for metric lookup: {len(reference_catalog)}")
     print(f"Weekly batches: {len(common_weeks)}")
-    print(f"Maximum lag searched: +/- {MAX_LAG_SECONDS} seconds")
 
-    all_catalogs = []
-    next_event_number = 1
+    all_rows = []
+    processed_events = set()
 
     for week_name in common_weeks:
         print(f"\nProcessing {week_name}")
@@ -618,153 +483,71 @@ def main():
             "filtered",
             primary_station
         )
-
         estimate_trace = load_primary_trace(
             estimate_weeks[week_name],
             "denoised",
             primary_station
         )
 
-        # Select catalog events covered by this week's primary-station traces.
-        reference_week_catalog = catalog_rows_for_week(
-            reference_catalog,
-            reference_trace
-        )
-
-        estimate_week_catalog = catalog_rows_for_week(
+        week_events = catalog_rows_for_week(
             estimate_catalog,
             estimate_trace
         )
 
-        # Match catalog events by temporal overlap.
-        matches = match_events(
-            reference_week_catalog,
-            estimate_week_catalog
-        )
+        print(f"Denoised events in this week's trace: {len(week_events)}")
 
-        print(
-            f"Filtered events: {len(reference_week_catalog)}"
-        )
-        print(
-            f"Denoised events: {len(estimate_week_catalog)}"
-        )
-        print(f"Matched events: {len(matches)}")
+        for _, denoised_row in week_events.iterrows():
+            event_number = denoised_row["event_number"]
 
-        if not matches:
-            print("No overlapping catalog events; skipping this week.")
-            continue
+            if event_number in processed_events:
+                continue
 
-        week_catalog = build_comparison_catalog(
-            reference_trace,
-            estimate_trace,
-            matches,
-            week_name,
-            next_event_number
-        )
+            processed_events.add(event_number)
 
-        all_catalogs.append(week_catalog)
-        next_event_number += len(matches)
+            filtered_row = find_filtered_event(
+                denoised_row,
+                reference_catalog
+            )
 
-        print(
-            f"Completed {len(week_catalog)} event comparisons."
-        )
+            row = build_comparison_row(
+                reference_trace,
+                estimate_trace,
+                denoised_row,
+                filtered_row,
+                week_name
+            )
 
-    if not all_catalogs:
+            all_rows.append(row)
+
+        print(f"Completed {len(week_events)} events in {week_name}.")
+
+    if not all_rows:
         raise RuntimeError(
-            "No overlapping catalog events were found."
+            "No denoised catalog events overlapped the primary-station "
+            "waveform coverage."
         )
 
-    catalog = pd.concat(
-        all_catalogs,
-        ignore_index=True
-    )
+    catalog = pd.DataFrame(all_rows, columns=COLUMNS)
+    catalog = catalog.sort_values("start_time").reset_index(drop=True)
 
-    # Save Stage 6 outputs only.
     output_dir = store.comparison_dir(cfg)
-    figure_dir = output_dir / "figures"
-    figure_dir.mkdir(parents=True, exist_ok=True)
+    output_dir.mkdir(parents=True, exist_ok=True)
 
     catalog_path = output_dir / "catalog.csv"
+    catalog.to_csv(catalog_path, index=False)
 
-    catalog.to_csv(
-        catalog_path,
-        index=False,
-        float_format=(
-            "%.5g"
-            if bool(cfg.output.compact_csv_floats)
-            else None
-        )
+    print("\nComparison catalog complete.")
+    print(f"Denoised events processed: {len(catalog)}")
+    print(f"Events with finite SDR: {np.isfinite(catalog['sdr_db']).sum()}")
+    print(
+        "Events with finite CC: "
+        f"{np.isfinite(catalog['max_correlation']).sum()}"
     )
-
-    # Histograms.
-    histograms = [
-        (
-            "delta_snr_db",
-            "SNR difference: denoised vs bandpass filtered",
-            "ΔSNR (denoised − filtered, dB)",
-            "snr_delta_histogram.png"
-        ),
-        (
-            "sdr_db",
-            "SDR: denoised relative to bandpass filtered",
-            "SDR (dB)",
-            "sdr_histogram.png"
-        ),
-        (
-            "max_correlation",
-            "Peak CC: denoised vs bandpass filtered",
-            "Peak cross-correlation (-1 to +1)",
-            "cc_histogram.png"
-        )
-    ]
-
-    for column, title, label, filename in histograms:
-        plot_histogram(
-            catalog[column],
-            title,
-            label,
-            figure_dir / filename
-        )
-
-    # Metrics through time.
-    plot_metric_over_time(
-        catalog,
-        "sdr_db",
-        "SDR through the comparison period",
-        "SDR (dB)",
-        figure_dir / "sdr_over_time.png"
+    print(
+        "Events without filtered catalog match: "
+        f"{catalog['reference_event_number'].isna().sum()}"
     )
-
-    plot_metric_over_time(
-        catalog,
-        "max_correlation",
-        "Peak CC through the comparison period",
-        "Peak cross-correlation (-1 to +1)",
-        figure_dir / "cc_over_time.png"
-    )
-
-    # Summary.
-    print("\nComparison finished.")
-    print(f"Matched events: {len(catalog)}")
     print(f"Saved comparison catalog: {catalog_path}")
-
-    for metric, label, suffix in [
-        ("delta_snr_db", "Median ΔSNR", " dB"),
-        ("sdr_db", "Median SDR", " dB"),
-        ("max_correlation", "Median peak CC", "")
-    ]:
-        values = catalog[metric].to_numpy(dtype=float)
-        values = values[np.isfinite(values)]
-
-        if len(values):
-            print(
-                f"{label}: {np.median(values):.3f}{suffix} "
-                f"({len(values)} finite events)"
-            )
-        else:
-            print(f"{label}: no finite values")
-
-    print(f"Figures saved in: {figure_dir}")
 
 
 if __name__ == "__main__":

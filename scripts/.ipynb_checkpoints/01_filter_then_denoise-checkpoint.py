@@ -1,8 +1,8 @@
 """Stage 1a: load -> remove response -> BANDPASS filter -> DeepDenoiser.
 Plots raw / filtered / denoised waveforms + spectrograms.
 
-    python scripts/01_filter_then_denoise.py
-    python scripts/01_filter_then_denoise.py --start 2025-11-01T00:02:00 --stop 2025-11-01T00:12:00
+    python scripts/01B_filter_then_denoise.py
+    python scripts/01B_filter_then_denoise.py --start 2025-11-01T00:02:00 --stop 2025-11-01T00:12:00
 
 Writes outputs/<run_id>/filter_then_denoise/{traces/, figures/, config_used.yaml}
 """

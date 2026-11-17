@@ -1,0 +1,5 @@
+outputs/
+.venv/
+cache/
+.idea/
+.DS_Store

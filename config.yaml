@@ -1,23 +1,20 @@
-# Single source of truth for a run. Every run copies this (plus any CLI
-# overrides) into outputs/<run_id>/config_used.yaml.
+# every run copies this
 
 data:
   source: IRIS
   network: AV
-  stations: [SSLS, SSLN, SSBA] # need to figure out how to skip station if no data is present
-  primary_station: SSLS        # trace used for plots / SNR / catalog intervals
+  stations: [SSLS, SSLN, SSBA]
+  primary_station: SSLN        # trace used for plots / SNR / catalog intervals
   location: ""
   channel: "BH*"               # what is requested from the server
   component: BHZ               # what is kept for processing
 
-  # Analysis window. Start a bit early so STA/LTA has time to warm up
-  # (see trigger.startup_seconds).
-  start_time: "2025-11-01T00:02:00"
-  stop_time: "2025-11-01T00:12:00"
+  # analysis window, start a bit early so STA/LTA has time to warm up
+  start_time: "2025-11-01T00:05:00"
+  stop_time: "2025-11-9T00:15:00"
 
-  # Padding added on each side at download time, trimmed off after
-  # filtering to remove taper/edge effects.
-  edge_trim_seconds: 5
+  # Padding added on each side at download time, trimmed off after filtering to remove taper/edge effects
+  edge_trim_seconds: 1800
 
   # Raw waveforms + station inventory are cached here so reruns are
   # offline and identical. Relative paths are relative to this file.
@@ -30,7 +27,7 @@ filter:
     corners: 2
     zerophase: true
   highpass:            # used by script 02 (denoise, then filter)
-    freq: 0.1
+    freq: 0.9
     corners: 2
     zerophase: true
 

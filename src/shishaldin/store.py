@@ -22,6 +22,11 @@ def stage_dir(cfg: Config, pipeline: str) -> Path:
     d.mkdir(parents=True, exist_ok=True)
     return d
 
+def weekly_dir(cfg: Config, pipeline: str, week_number: int) -> Path:
+    d = stage_dir(cfg, pipeline) / "weekly" / f"week_{week_number:02d}"
+    d.mkdir(parents=True, exist_ok=True)
+    return d
+
 def comparison_dir(cfg: Config) -> Path:
     d = cfg.run_dir / "comparison"
     d.mkdir(parents=True, exist_ok=True)

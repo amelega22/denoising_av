@@ -26,7 +26,7 @@ class DataConfig:
 
 @dataclass
 class BandpassConfig:
-    """Used by scripts/01_filter_then_denoise.py"""
+    """Used by scripts/01B_filter_then_denoise.py"""
     freqmin: float = 0.1
     freqmax: float = 8.0
     corners: int = 2

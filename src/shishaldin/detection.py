@@ -1,4 +1,5 @@
-"""perform sta lta event detection, identify network coincidence events, and analyze individual station triggers"""from __future__ import annotations
+"""perform sta lta event detection, identify network coincidence events, and analyze individual station triggers"""
+from __future__ import annotations
 
 from typing import Dict, List, Sequence, Tuple
 
@@ -21,9 +22,34 @@ def triggers_to_intervals(trace: Trace, triggers) -> List[Interval]:
 def intervals_overlap(a_start, a_end, b_start, b_end) -> bool:
     return a_start < b_end and b_start < a_end
 
+
 def overlap_flags(intervals: Sequence[Interval], others: Sequence[Interval]) -> List[bool]:
-    """For each interval, is there ANY overlapping interval in `others`?"""
-    return [any(intervals_overlap(s, e, os_, oe) for os_, oe in others) for s, e in intervals]
+    """
+    determine whether anay interval in others overlaps it
+    """
+    from bisect import bisect_right
+
+    if not intervals or not others:
+        return [False] * len(intervals)
+
+    sorted_others = sorted(others, key=lambda x: x[0])
+
+    merged = []
+    for start, end in sorted_others:
+        if not merged or start > merged[-1][1]:
+            merged.append([start, end])
+        else:
+            merged[-1][1] = max(merged[-1][1], end)
+
+    other_starts = [interval[0] for interval in merged]
+
+    flags = []
+    for start, end in intervals:
+        idx = bisect_right(other_starts, end) - 1
+        flags.append(idx >= 0 and merged[idx][1] >= start)
+
+    return flags
+
 
 
 # network coincidence triggering
@@ -38,13 +64,12 @@ def run_sta_lta(trace: Trace, others: Sequence[Trace], tcfg: TriggerConfig, coin
 
     traces = [trace, *others]
     if len(traces) < coinc_sum: 
-        raise ValueError(f"Need {coinc_sum} stations for coincidence detection, "f"but only have {len(traces)}"
+        raise ValueError(f"Need {coinc_sum} stations for coincidence detection, "f"but only have {len(traces)}")
     st_trig = Stream([tr.copy() for tr in traces])
     trig = coincidence_trigger(
         trigger_type="classicstalta", thr_on=tcfg.thr_on, thr_off=tcfg.thr_off,
         stream=st_trig, thr_coincidence_sum=coinc_sum,
-        sta=tcfg.sta_seconds, lta=tcfg.lta_seconds, details=False,
-    )
+        sta=tcfg.sta_seconds, lta=tcfg.lta_seconds, details=False)
 
     triggers = []
     for t in trig:

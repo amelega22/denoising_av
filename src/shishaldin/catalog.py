@@ -34,12 +34,8 @@ def _row(event_number: int, kind: str, trace: Trace, start, end, noise_seconds: 
     }
 
 
-def build_catalog(filtered_trace: Trace, denoised_trace: Trace,
-                  triggers_filtered, triggers_denoised, noise_seconds: float):
-    """Returns (catalog_df, summary_dict)
-
-    filtered detections are numbered first, in order, denoised detection overlapping a filtered one (first unmatched match) gets that same
-    event_number and leftover denoised detections get new event_numbers
+def build_catalog(filtered_trace: Trace, denoised_trace: Trace, triggers_filtered, triggers_denoised, noise_seconds: float):
+    """returns (catalog_df, summary_dict)
     """
     f_int = triggers_to_intervals(filtered_trace, triggers_filtered)
     d_int = triggers_to_intervals(denoised_trace, triggers_denoised)
@@ -96,10 +92,8 @@ def overlap_summary(filtered_trace: Trace, denoised_trace: Trace, triggers_filte
     }
 
 
-def filtered_only_report(filtered_trace: Trace, denoised_trace: Trace,
-                         triggers_filtered, triggers_denoised, cft_denoised) -> pd.DataFrame:
-    """For each filtered detection with no denoised counterpart: how close did
-    the denoised STA/LTA come to triggering in that window?"""
+def filtered_only_report(filtered_trace: Trace, denoised_trace: Trace, triggers_filtered, triggers_denoised, cft_denoised) -> pd.DataFrame:
+    """how close did the denoised STA/LTA come to triggering in that window?"""
     f_int = triggers_to_intervals(filtered_trace, triggers_filtered)
     d_int = triggers_to_intervals(denoised_trace, triggers_denoised)
     flags = overlap_flags(f_int, d_int)
