@@ -20,6 +20,8 @@ data and can use substantial memory and disk space.
 """
 
 import logging
+from concurrent.futures import ThreadPoolExecutor
+from functools import partial
 
 import matplotlib.pyplot as plt
 from obspy import Stream, UTCDateTime
@@ -225,6 +227,74 @@ def rebuild_trace(pieces, start, stop, is_last_week, station, kind):
     return trim_week(stream[0], start, stop, is_last_week)
 
 
+def process_station(
+    station, cfg, inv, model, refresh, week_number, week_start, week_stop,
+    is_last_week, diagnostics=False, stitch_full=False,
+):
+    log.info("week %02d: attempting station %s", week_number, station)
+
+    try:
+        stream = get_raw_stream(
+            cfg, station, refresh,
+            start=week_start - PAD_SECONDS,
+            stop=week_stop + PAD_SECONDS,
+        )
+
+        if len(stream) == 0:
+            raise NoStationDataError(f"{station}: no waveform data returned")
+
+        segments, n_dropped = prepare_segments(
+            stream, inv, station, cfg.data.instrument_correction
+        )
+
+        if not segments:
+            raise NoStationDataError(
+                f"{station}: no continuous segment of at least {MIN_SEGMENT_SECONDS} s"
+            )
+
+        diagnostics_dir = (
+            cfg.run_dir / "diagnostics" / f"week_{week_number:02d}"
+            if diagnostics else None
+        )
+        raw_pieces, filtered_pieces, denoised_pieces = process_segments(
+            segments, model, cfg, station, diagnostics_dir, include_raw=stitch_full
+        )
+
+        gaps = find_gaps(filtered_pieces, week_start, week_stop)
+        gap_seconds = sum(float(end - start) for start, end in gaps)
+        log.info(
+            "week %02d: %s has %d segment(s), %d short piece(s) "
+            "dropped, %d gap(s) totalling %.0f s inside the window",
+            week_number, station, len(segments), n_dropped, len(gaps), gap_seconds,
+        )
+
+        raw = (
+            rebuild_trace(
+                raw_pieces, week_start, week_stop, is_last_week, station, "raw"
+            )
+            if stitch_full else None
+        )
+        filtered = rebuild_trace(
+            filtered_pieces, week_start, week_stop, is_last_week, station, "filtered"
+        )
+        denoised = {
+            pipeline: rebuild_trace(
+                denoised_pieces[pipeline], week_start, week_stop, is_last_week,
+                station, f"denoised ({pipeline})",
+            )
+            for pipeline in PIPELINES
+        }
+
+        log.info("week %02d: successfully processed %s", week_number, station)
+        return station, raw, filtered, denoised, gaps
+
+    except (FDSNNoDataException, NoStationDataError) as exc:
+        log.warning(
+            "week %02d: skipping station %s: %s", week_number, station, exc
+        )
+        return None
+
+
 def add_options(parser):
     add_refresh(parser)
     parser.add_argument("--diagnostics", action="store_true",
@@ -235,10 +305,16 @@ def add_options(parser):
         help=("also build and save full-period raw/filtered/denoised traces "
               "and waveform figures (uses substantial disk space and memory)"),
     )
+    parser.add_argument(
+        "--workers", type=int, default=1,
+        help="number of stations to process concurrently (default: %(default)s)",
+    )
 
 
 def main():
     cfg, args = get_cfg(__doc__, extra=add_options)
+    if args.workers < 1:
+        raise ValueError("--workers must be at least 1")
     inv = get_inventory(cfg, args.refresh)
     model = load_denoiser(cfg)
 
@@ -255,6 +331,7 @@ def main():
 
     log.info("pipelines: %s", ", ".join(PIPELINES))
     log.info("processing %d daily batch(es)", len(windows))
+    log.info("station workers: %d", args.workers)
 
     for week_number, (week_start, week_stop) in enumerate(windows, start=1):
         is_last_week = week_number == len(windows)
@@ -272,69 +349,36 @@ def main():
         week_denoised = {pipeline: {} for pipeline in PIPELINES}
         week_gaps = {}
 
-        for station in cfg.data.stations:
-            log.info("week %02d: attempting station %s", week_number, station)
-
-            try:
-                # Download the batch with padding on both sides
-                stream = get_raw_stream(cfg,station,args.refresh,start=week_start - PAD_SECONDS,stop=week_stop + PAD_SECONDS)
-
-                if len(stream) == 0:
-                    raise NoStationDataError(f"{station}: no waveform data returned")
-
-                segments, n_dropped = prepare_segments(
-                    stream, inv, station, cfg.data.instrument_correction)
-
-                if not segments:
-                    raise NoStationDataError(f"{station}: no continuous segment of at least ", f"{MIN_SEGMENT_SECONDS} s")
-
-                # filter once, denoise once per pipeline, segment by segment
-                diagnostics_dir = (cfg.run_dir / "diagnostics" / f"week_{week_number:02d}"
-                                   if args.diagnostics else None)
-                raw_pieces, filtered_pieces, denoised_pieces = process_segments(
-                    segments, model, cfg, station, diagnostics_dir,
-                    include_raw=args.stitch_full)
-
-                gaps = find_gaps(filtered_pieces, week_start, week_stop)
-                gap_seconds = sum(float(end - start) for start, end in gaps)
-
-                log.info(
-                    "week %02d: %s has %d segment(s), %d short piece(s) "
-                    "dropped, %d gap(s) totalling %.0f s inside the window",
-                    week_number,
-                    station,
-                    len(segments),
-                    n_dropped,
-                    len(gaps),
-                    gap_seconds,
-                )
-
-                # rejoin and trim off the padding
+        run_station = partial(
+            process_station, cfg=cfg, inv=inv, model=model, refresh=args.refresh,
+            week_number=week_number, week_start=week_start, week_stop=week_stop,
+            is_last_week=is_last_week, diagnostics=args.diagnostics,
+            stitch_full=args.stitch_full,
+        )
+        if args.workers == 1:
+            results = map(run_station, cfg.data.stations)
+            for result in results:
+                if result is None:
+                    continue
+                station, raw, filtered, denoised, gaps = result
                 if args.stitch_full:
-                    week_raw[station] = rebuild_trace(
-                        raw_pieces, week_start, week_stop, is_last_week,
-                        station, "raw"
-                    )
-                week_filtered[station] = rebuild_trace(filtered_pieces, week_start, week_stop,is_last_week, station, "filtered")
-
-                for pipeline in PIPELINES:
-                    week_denoised[pipeline][station] = rebuild_trace(denoised_pieces[pipeline], week_start, week_stop, is_last_week, station, f"denoised ({pipeline})")
-
+                    week_raw[station] = raw
+                week_filtered[station] = filtered
                 week_gaps[station] = gaps
-
-                log.info(
-                    "week %02d: successfully processed %s",
-                    week_number,
-                    station,
-                )
-
-            except (FDSNNoDataException, NoStationDataError) as exc:
-                log.warning(
-                    "week %02d: skipping station %s: %s",
-                    week_number,
-                    station,
-                    exc,
-                )
+                for pipeline in PIPELINES:
+                    week_denoised[pipeline][station] = denoised[pipeline]
+        else:
+            with ThreadPoolExecutor(max_workers=args.workers) as executor:
+                for result in executor.map(run_station, cfg.data.stations):
+                    if result is None:
+                        continue
+                    station, raw, filtered, denoised, gaps = result
+                    if args.stitch_full:
+                        week_raw[station] = raw
+                    week_filtered[station] = filtered
+                    week_gaps[station] = gaps
+                    for pipeline in PIPELINES:
+                        week_denoised[pipeline][station] = denoised[pipeline]
 
         # Require enough stations for this week's processing
         if len(week_filtered) < cfg.coincidence_sum:
